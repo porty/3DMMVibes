@@ -10,7 +10,8 @@ import (
 // KCDC bit stream so that DecodeKauaiChunk can be called directly.
 func buildKCDCPayload(stream []byte, cbDst int) []byte {
 	hdr := make([]byte, 8)
-	binary.BigEndian.PutUint32(hdr[0:4], 0)           // cfmt = KCDC
+	// binary.BigEndian.PutUint32(hdr[0:4], 0)           // cfmt = KCDC
+	copy(hdr, kcdc)
 	binary.BigEndian.PutUint32(hdr[4:8], uint32(cbDst)) // decompressed size
 	return append(hdr, stream...)
 }
@@ -101,11 +102,11 @@ func TestKCDC_singleLiteral(t *testing.T) {
 	//   src[4] bits 24-31: all ones          → 0xFF   (still within 20-ones block)
 	//   src[5..10]          = 0xFF tail      (bit 32 = first tail bit = 1 ✓)
 	stream := []byte{
-		0x00,       // flags
-		0x84,       // bits 0-7
-		0xFE,       // bits 8-15
-		0xFF,       // bits 16-23
-		0xFF,       // bits 24-31 (all within the 20 EOS ones, positions 13..32)
+		0x00,                               // flags
+		0x84,                               // bits 0-7
+		0xFE,                               // bits 8-15
+		0xFF,                               // bits 16-23
+		0xFF,                               // bits 24-31 (all within the 20 EOS ones, positions 13..32)
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // tail
 	}
 

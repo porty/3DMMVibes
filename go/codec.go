@@ -9,7 +9,8 @@
 //	[tail: 6 × 0xFF]
 //
 // References: kauai/src/codkauai.cpp, kauai/src/codkpri.h,
-//             docs/kauai-codec.md
+//
+//	docs/kauai-codec.md
 package main
 
 import (
@@ -18,10 +19,15 @@ import (
 )
 
 const (
-	kcbCodecHeader = 8 // 4-byte cfmt (BE) + 4-byte cbDst (BE)
-	kcbTail        = 6 // six 0xFF bytes terminating every compressed stream
-	cfmtKCDC       = 0 // kcfmtKauai
-	cfmtKCD2       = 1 // kcfmtKauai2
+	kcbCodecHeader = 8          // 4-byte cfmt (BE) + 4-byte cbDst (BE)
+	kcbTail        = 6          // six 0xFF bytes terminating every compressed stream
+	cfmtKCDC       = 0x4B434443 // kcfmtKauai - 'KCDC'
+	cfmtKCD2       = 0x4B434432 // kcfmtKauai2 - 'KCD2'
+)
+
+var (
+	kcdc = []byte{'K', 'C', 'D', 'C'}
+	kcd2 = []byte{'K', 'C', 'D', '2'}
 )
 
 // DecodeKauaiChunk decompresses a packed Kauai chunk.
