@@ -15,6 +15,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Commands:")
 		fmt.Fprintln(os.Stderr, "  chunky   List or extract chunks from a chunky file (.chk)")
+		fmt.Fprintln(os.Stderr, "  mbmp        Decode an MBMP chunk and write it as a PNG image")
 	}
 	flag.Parse()
 
@@ -26,6 +27,8 @@ func main() {
 	switch flag.Arg(0) {
 	case "chunky":
 		chunkyMain(flag.Args()[1:])
+	case "mbmp":
+		mbmpMain(flag.Args()[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", flag.Arg(0))
 		flag.Usage()
@@ -202,6 +205,91 @@ func parseCTGString(s string) uint32 {
 		b[i] = s[i]
 	}
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+func mbmpMain(args []string) {
+	fs := flag.NewFlagSet("mbmp", flag.ExitOnError)
+	outFile := fs.String("o", "", "Output PNG file (default: stdout)")
+	view := fs.Bool("view", false, "View the image in terminal")
+	info := fs.Bool("info", false, "Get information about the MBMP")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go mbmp [-view] [-info] [-o output.png] <input.mbmp>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Decode an MBMP chunk and write it as a PNG image.")
+		fmt.Fprintln(os.Stderr, "Palette indices are written as grayscale; alpha is preserved.")
+		fmt.Fprintln(os.Stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	path := fs.Arg(0)
+	f, err := os.Open(path)
+	if err != nil {
+		fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+
+	img, err := ReadMBMP(f)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	// Convert to NRGBA so standard PNG encoding works correctly.
+	// Palette indices have no associated palette in the MBMP format, so
+	// they are rendered as grayscale (R=G=B=index) with the decoded alpha.
+	bounds := img.Bounds()
+
+	if *info {
+		fmt.Printf("Width: %d\nHeight: %d\n", bounds.Dx(), bounds.Dy())
+		return
+	}
+
+	out := image.NewNRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			c := img.At(x, y).(MBMPColor)
+			// out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
+			r, g, b, a := c.RGBA()
+			_, _, _, _ = r, g, b, a
+			// out.SetNRGBA(x, y, color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: uint8(a)})
+			// g = (uint32(c.Index) & 0b00110000) << 1
+			a8 := uint8(255)
+			if a != 0 {
+				a8 = 0
+			}
+			out.SetNRGBA(x, y, color.NRGBA{R: a8, G: a8, B: a8})
+			// out.Set(x, y, c)
+		}
+	}
+
+	if *view {
+		if err, _ := imgterm.Display(img); err != nil {
+			panic(err)
+		}
+		return
+	}
+
+	var w io.Writer
+	if *outFile == "" {
+		w = os.Stdout
+	} else {
+		pf, err := os.Create(*outFile)
+		if err != nil {
+			fatalf("create %s: %v", *outFile, err)
+		}
+		defer pf.Close()
+		w = pf
+	}
+
+	if err := png.Encode(w, out); err != nil {
+		fatalf("encode PNG: %v", err)
+	}
 }
 
 func fatalf(format string, args ...any) {

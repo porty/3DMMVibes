@@ -45,8 +45,8 @@ var MBMPColorModel color.Model = mbmpModel{}
 // Index i = (y-Rect.Min.Y)*Rect.Dx() + (x-Rect.Min.X).
 // Rect coordinates are in MBMP reference-point space; Min.X/Y may be negative.
 type MBMPImage struct {
-	Pix   []uint8        // palette indices
-	Alpha []uint8        // 0 = transparent, 255 = opaque; same layout as Pix
+	Pix   []uint8 // palette indices
+	Alpha []uint8 // 0 = transparent, 255 = opaque; same layout as Pix
 	Rect  image.Rectangle
 	Mask  bool   // if true, all opaque pixels use Fill (no per-pixel index stored)
 	Fill  uint8  // fill index used when Mask is true
