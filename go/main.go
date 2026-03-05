@@ -1,12 +1,18 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/porty/3dmm-go/imgterm"
 )
 
 func main() {
@@ -14,8 +20,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go <command> [flags]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Commands:")
-		fmt.Fprintln(os.Stderr, "  chunky   List or extract chunks from a chunky file (.chk)")
+		fmt.Fprintln(os.Stderr, "  chunky      List or extract chunks from a chunky file (.chk)")
 		fmt.Fprintln(os.Stderr, "  mbmp        Decode an MBMP chunk and write it as a PNG image")
+		fmt.Fprintln(os.Stderr, "  genpalette  Generate a palette from two images")
 	}
 	flag.Parse()
 
@@ -29,6 +36,8 @@ func main() {
 		chunkyMain(flag.Args()[1:])
 	case "mbmp":
 		mbmpMain(flag.Args()[1:])
+	case "genpalette":
+		genpaletteMain(flag.Args()[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", flag.Arg(0))
 		flag.Usage()
@@ -39,10 +48,10 @@ func main() {
 func chunkyMain(args []string) {
 	fs := flag.NewFlagSet("chunky", flag.ExitOnError)
 	doExtract := fs.Bool("extract", false, "Extract chunks to individual files")
-	outDir    := fs.String("outdir", ".", "Output directory for extracted chunks")
-	ctgStr    := fs.String("ctg", "", `Filter by chunk type (4 chars, e.g. "MVIE")`)
-	cnoVal    := fs.Int("cno", -1, "Filter by chunk number (-1 = all chunks)")
-	verbose   := fs.Bool("v", false, "Print each file written during extraction")
+	outDir := fs.String("outdir", ".", "Output directory for extracted chunks")
+	ctgStr := fs.String("ctg", "", `Filter by chunk type (4 chars, e.g. "MVIE")`)
+	cnoVal := fs.Int("cno", -1, "Filter by chunk number (-1 = all chunks)")
+	verbose := fs.Bool("v", false, "Print each file written during extraction")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go chunky [flags] <file.chk>")
 		fmt.Fprintln(os.Stderr, "")
@@ -290,6 +299,68 @@ func mbmpMain(args []string) {
 	if err := png.Encode(w, out); err != nil {
 		fatalf("encode PNG: %v", err)
 	}
+}
+
+func genpaletteMain(args []string) {
+	fs := flag.NewFlagSet("genpalette", flag.ExitOnError)
+	outFile := fs.String("o", "", "Output file (default: stdout)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go genpalette [-o output] <src-image> <comparison-image>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Generate a palette from two images and write it in binary form.")
+		fmt.Fprintln(os.Stderr, "Each color is written as 4 bytes: R G B A.")
+		fmt.Fprintln(os.Stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	src := loadImage(fs.Arg(0))
+	cmp := loadImage(fs.Arg(1))
+
+	palette, err := GenPalette(src, cmp)
+	if err != nil {
+		fatalf("genpalette: %v", err)
+	}
+
+	var w io.Writer
+	if *outFile == "" {
+		w = os.Stdout
+	} else {
+		pf, err := os.Create(*outFile)
+		if err != nil {
+			fatalf("create %s: %v", *outFile, err)
+		}
+		defer pf.Close()
+		w = pf
+	}
+
+	for _, c := range palette.Colors {
+		r, g, b, a := c.RGBA()
+		buf := [4]byte{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+		if err := binary.Write(w, binary.BigEndian, buf); err != nil {
+			fatalf("write palette: %v", err)
+		}
+	}
+}
+
+// loadImage opens an image file (PNG, etc.) and decodes it, exiting on error.
+func loadImage(path string) image.Image {
+	f, err := os.Open(path)
+	if err != nil {
+		fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		fatalf("decode %s: %v", path, err)
+	}
+	return img
 }
 
 func fatalf(format string, args ...any) {
