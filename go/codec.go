@@ -27,7 +27,7 @@ const (
 
 var (
 	kcdc = []byte{'K', 'C', 'D', 'C'}
-	kcd2 = []byte{'K', 'C', 'D', '2'}
+	// kcd2 = []byte{'K', 'C', 'D', '2'}
 )
 
 // DecodeKauaiChunk decompresses a packed Kauai chunk.
