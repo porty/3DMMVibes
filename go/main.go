@@ -221,11 +221,12 @@ func mbmpMain(args []string) {
 	outFile := fs.String("o", "", "Output PNG file (default: stdout)")
 	view := fs.Bool("view", false, "View the image in terminal")
 	info := fs.Bool("info", false, "Get information about the MBMP")
+	paletteFile := fs.String("palette", "", "Palette file (1024 bytes: 256 × RGBA); if omitted, grayscale")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go mbmp [-view] [-info] [-o output.png] <input.mbmp>")
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go mbmp [-view] [-info] [-palette palette.bin] [-o output.png] <input.mbmp>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Decode an MBMP chunk and write it as a PNG image.")
-		fmt.Fprintln(os.Stderr, "Palette indices are written as grayscale; alpha is preserved.")
+		fmt.Fprintln(os.Stderr, "Without -palette, indices are rendered as grayscale (R=G=B=index).")
 		fmt.Fprintln(os.Stderr, "")
 		fs.PrintDefaults()
 	}
@@ -249,9 +250,6 @@ func mbmpMain(args []string) {
 		fatalf("%v", err)
 	}
 
-	// Convert to NRGBA so standard PNG encoding works correctly.
-	// Palette indices have no associated palette in the MBMP format, so
-	// they are rendered as grayscale (R=G=B=index) with the decoded alpha.
 	bounds := img.Bounds()
 
 	if *info {
@@ -259,26 +257,29 @@ func mbmpMain(args []string) {
 		return
 	}
 
+	var pal []color.RGBA
+	if *paletteFile != "" {
+		pal = loadPalette(*paletteFile)
+	}
+
+	// Convert to NRGBA. With a palette, map indices to their actual colors.
+	// Without a palette, use grayscale (R=G=B=index) with the decoded alpha.
 	out := image.NewNRGBA(bounds)
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			c := img.At(x, y).(MBMPColor)
-			// out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
-			r, g, b, a := c.RGBA()
-			_, _, _, _ = r, g, b, a
-			// out.SetNRGBA(x, y, color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: uint8(a)})
-			// g = (uint32(c.Index) & 0b00110000) << 1
-			a8 := uint8(255)
-			if a != 0 {
-				a8 = 0
+			if pal != nil {
+				pc := pal[c.Index]
+				// Use src alpha so transparency from the MBMP mask is preserved.
+				out.SetNRGBA(x, y, color.NRGBA{R: pc.R, G: pc.G, B: pc.B, A: c.A})
+			} else {
+				out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
 			}
-			out.SetNRGBA(x, y, color.NRGBA{R: a8, G: a8, B: a8})
-			// out.Set(x, y, c)
 		}
 	}
 
 	if *view {
-		if err, _ := imgterm.Display(img); err != nil {
+		if err, _ := imgterm.Display(out); err != nil {
 			panic(err)
 		}
 		return
@@ -299,6 +300,23 @@ func mbmpMain(args []string) {
 	if err := png.Encode(w, out); err != nil {
 		fatalf("encode PNG: %v", err)
 	}
+}
+
+// loadPalette reads a binary palette file (256 × 4 bytes, RGBA) and returns
+// the 256 colors. Exits on any error.
+func loadPalette(path string) []color.RGBA {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fatalf("read palette %s: %v", path, err)
+	}
+	if len(data) != 1024 {
+		fatalf("palette %s: expected 1024 bytes (256 × RGBA), got %d", path, len(data))
+	}
+	pal := make([]color.RGBA, 256)
+	for i := range pal {
+		pal[i] = color.RGBA{R: data[i*4], G: data[i*4+1], B: data[i*4+2], A: data[i*4+3]}
+	}
+	return pal
 }
 
 func genpaletteMain(args []string) {
