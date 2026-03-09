@@ -64,6 +64,14 @@ const (
 	crpbgFixedSize = 32 // sizeof(CRPBG)
 )
 
+// KID is a child-chunk reference stored in each CRP variable-data block.
+// On disk: CTG uint32 LE, CNO uint32 LE, CHID uint32 LE (12 bytes total).
+type KID struct {
+	CTG  uint32 // child chunk type tag
+	CNO  uint32 // child chunk number
+	CHID uint32 // child ID (used to distinguish multiple same-type children)
+}
+
 // ChunkyFile is the result of parsing a chunky file header and index.
 type ChunkyFile struct {
 	Creator uint32 // CTG of the program that wrote this file
@@ -80,6 +88,7 @@ type Chunk struct {
 	Size   int32  // byte size of raw chunk data (may be compressed)
 	Flags  uint32 // fcrp* bitmask flags
 	CKid   int    // number of child-chunk references
+	Kids   []KID  // child-chunk references, length == CKid
 }
 
 // IsPacked reports whether the chunk data is compressed.
@@ -264,13 +273,19 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 		if err := binary.Read(bytes.NewReader(data[:crpsmFixedSize]), binary.LittleEndian, &crp); err != nil {
 			return Chunk{}, fmt.Errorf("reading CRPSM: %w", err)
 		}
+		ckid := int(crp.CKid)
+		kids, err := parseKIDs(data[crpsmFixedSize:], ckid)
+		if err != nil {
+			return Chunk{}, fmt.Errorf("parsing CRPSM kids: %w", err)
+		}
 		return Chunk{
 			CTG:    crp.CTG,
 			CNO:    crp.CNO,
 			Offset: crp.FP,
 			Size:   int32(crp.LuGrfcrpCb >> kcbitGrfcrp),
 			Flags:  crp.LuGrfcrpCb & 0xFF,
-			CKid:   int(crp.CKid),
+			CKid:   ckid,
+			Kids:   kids,
 		}, nil
 
 	case crpbgFixedSize:
@@ -293,19 +308,87 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 				grfcrp |= FcrpPacked
 			}
 		}
+		ckid := int(crp.CKid)
+		kids, err := parseKIDs(data[crpbgFixedSize:], ckid)
+		if err != nil {
+			return Chunk{}, fmt.Errorf("parsing CRPBG kids: %w", err)
+		}
 		return Chunk{
 			CTG:    crp.CTG,
 			CNO:    crp.CNO,
 			Offset: crp.FP,
 			Size:   crp.Cb,
 			Flags:  grfcrp,
-			CKid:   int(crp.CKid),
+			CKid:   ckid,
+			Kids:   kids,
 		}, nil
 
 	default:
 		return Chunk{}, fmt.Errorf("unknown CRP fixed size %d (expected %d for CRPSM or %d for CRPBG)",
 			cbFixed, crpsmFixedSize, crpbgFixedSize)
 	}
+}
+
+// parseKIDs reads ckid KID records from the start of varData.
+// Each KID is 12 bytes: CTG uint32 LE, CNO uint32 LE, CHID uint32 LE.
+func parseKIDs(varData []byte, ckid int) ([]KID, error) {
+	if ckid == 0 {
+		return nil, nil
+	}
+	need := ckid * 12
+	if len(varData) < need {
+		return nil, fmt.Errorf("variable data too short for %d KIDs: have %d bytes, need %d", ckid, len(varData), need)
+	}
+	kids := make([]KID, ckid)
+	for i := range kids {
+		off := i * 12
+		kids[i] = KID{
+			CTG:  binary.LittleEndian.Uint32(varData[off : off+4]),
+			CNO:  binary.LittleEndian.Uint32(varData[off+4 : off+8]),
+			CHID: binary.LittleEndian.Uint32(varData[off+8 : off+12]),
+		}
+	}
+	return kids, nil
+}
+
+// FindChunk returns the first chunk with the given CTG and CNO, or false.
+func (cf *ChunkyFile) FindChunk(ctg, cno uint32) (Chunk, bool) {
+	for _, c := range cf.Chunks {
+		if c.CTG == ctg && c.CNO == cno {
+			return c, true
+		}
+	}
+	return Chunk{}, false
+}
+
+// FindChildByChidCTG finds a child of parent with the given CHID and child CTG,
+// then resolves and returns the full Chunk record from cf.Chunks.
+func (cf *ChunkyFile) FindChildByChidCTG(parent Chunk, chid, ctg uint32) (Chunk, bool) {
+	for _, kid := range parent.Kids {
+		if kid.CHID == chid && kid.CTG == ctg {
+			return cf.FindChunk(kid.CTG, kid.CNO)
+		}
+	}
+	return Chunk{}, false
+}
+
+// ChunkData reads and decompresses (if packed) the raw bytes of a chunk.
+func ChunkData(r io.ReaderAt, c Chunk) ([]byte, error) {
+	if c.Size <= 0 {
+		return nil, nil
+	}
+	raw := make([]byte, c.Size)
+	if _, err := r.ReadAt(raw, int64(c.Offset)); err != nil {
+		return nil, fmt.Errorf("reading chunk %s/0x%08X at 0x%X: %w", ctgToString(c.CTG), c.CNO, c.Offset, err)
+	}
+	if c.IsPacked() {
+		data, err := DecodeKauaiChunk(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decompressing chunk %s/0x%08X: %w", ctgToString(c.CTG), c.CNO, err)
+		}
+		return data, nil
+	}
+	return raw, nil
 }
 
 // ctgToString converts a CTG uint32 (read as little-endian from disk) to its
