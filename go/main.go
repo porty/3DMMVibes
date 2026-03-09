@@ -238,67 +238,75 @@ func mbmpMain(args []string) {
 		os.Exit(1)
 	}
 
-	path := fs.Arg(0)
-	f, err := os.Open(path)
-	if err != nil {
-		fatalf("open %s: %v", path, err)
-	}
-	defer f.Close()
-
-	img, err := ReadMBMP(f)
-	if err != nil {
-		fatalf("%v", err)
-	}
-
-	bounds := img.Bounds()
-
-	if *info {
-		fmt.Printf("Width: %d\nHeight: %d\n", bounds.Dx(), bounds.Dy())
-		return
-	}
-
 	var pal []color.RGBA
 	if *paletteFile != "" {
 		pal = loadPalette(*paletteFile)
 	}
 
-	// Convert to NRGBA. With a palette, map indices to their actual colors.
-	// Without a palette, use grayscale (R=G=B=index) with the decoded alpha.
-	out := image.NewNRGBA(bounds)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			c := img.At(x, y).(MBMPColor)
-			if pal != nil {
-				pc := pal[c.Index]
-				// Use src alpha so transparency from the MBMP mask is preserved.
-				out.SetNRGBA(x, y, color.NRGBA{R: pc.R, G: pc.G, B: pc.B, A: c.A})
-			} else {
-				out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
+	for i, path := range fs.Args() {
+		if i > 0 {
+			fmt.Println()
+		}
+		if fs.NArg() > 1 {
+			fmt.Println(path)
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			fatalf("open %s: %v", path, err)
+		}
+
+		img, err := ReadMBMP(f)
+		f.Close()
+		if err != nil {
+			fatalf("%v", err)
+		}
+
+		bounds := img.Bounds()
+
+		if *info {
+			fmt.Printf("Width: %d\nHeight: %d\n", bounds.Dx(), bounds.Dy())
+			continue
+		}
+
+		// Convert to NRGBA. With a palette, map indices to their actual colors.
+		// Without a palette, use grayscale (R=G=B=index) with the decoded alpha.
+		out := image.NewNRGBA(bounds)
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				c := img.At(x, y).(MBMPColor)
+				if pal != nil {
+					pc := pal[c.Index]
+					// Use src alpha so transparency from the MBMP mask is preserved.
+					out.SetNRGBA(x, y, color.NRGBA{R: pc.R, G: pc.G, B: pc.B, A: c.A})
+				} else {
+					out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
+				}
 			}
 		}
-	}
 
-	if *view {
-		if err, _ := imgterm.Display(out); err != nil {
-			panic(err)
+		if *view {
+			if err, _ := imgterm.Display(out); err != nil {
+				panic(err)
+			}
+			continue
 		}
-		return
-	}
 
-	var w io.Writer
-	if *outFile == "" {
-		w = os.Stdout
-	} else {
-		pf, err := os.Create(*outFile)
-		if err != nil {
-			fatalf("create %s: %v", *outFile, err)
+		var w io.Writer
+		if *outFile == "" {
+			w = os.Stdout
+		} else {
+			pf, err := os.Create(*outFile)
+			if err != nil {
+				fatalf("create %s: %v", *outFile, err)
+			}
+			defer pf.Close()
+			w = pf
 		}
-		defer pf.Close()
-		w = pf
-	}
 
-	if err := png.Encode(w, out); err != nil {
-		fatalf("encode PNG: %v", err)
+		if err := png.Encode(w, out); err != nil {
+			fatalf("encode PNG: %v", err)
+		}
 	}
 }
 
