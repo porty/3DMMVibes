@@ -16,10 +16,6 @@ const (
 	ctgGLCR = uint32('G')<<24 | uint32('L')<<16 | uint32('C')<<8 | uint32('R')
 )
 
-// globalPalette is the application-wide 256-color base palette. Set this
-// before calling LoadBackgroundScene if you have palette data.
-var globalPalette Palette
-
 // CameraAngle holds the decoded background image for one camera position.
 type CameraAngle struct {
 	Index int        // 0-based camera index (CHID of the CAM chunk)
@@ -33,12 +29,85 @@ type BackgroundScene struct {
 	Angles    []CameraAngle // one per CAM child, in CHID order
 }
 
+// GrayscalePalette returns a 256-entry palette where entry i = RGBA{i,i,i,255}.
+func GrayscalePalette() Palette {
+	colors := make([]color.Color, 256)
+	for i := range colors {
+		v := uint8(i)
+		colors[i] = color.RGBA{R: v, G: v, B: v, A: 0xFF}
+	}
+	return Palette{Colors: colors}
+}
+
+// FindGLCR searches cf for a top-level GLCR chunk, decodes it, and returns a
+// full 256-entry palette. It tries CNO 0 first, then the first 256-entry
+// GLCR, then any GLCR. Returns (palette, true, nil) on success or
+// (Palette{}, false, nil) if no GLCR chunk is present.
+func FindGLCR(cf *ChunkyFile, r io.ReaderAt) (Palette, bool, error) {
+	// Collect all top-level GLCR chunks.
+	var glcrChunks []Chunk
+	for _, c := range cf.Chunks {
+		if c.CTG == ctgGLCR {
+			glcrChunks = append(glcrChunks, c)
+		}
+	}
+	if len(glcrChunks) == 0 {
+		return Palette{}, false, nil
+	}
+
+	// Try CNO 0 first.
+	candidate := glcrChunks[0]
+	for _, c := range glcrChunks {
+		if c.CNO == 0 {
+			candidate = c
+			break
+		}
+	}
+
+	// If CNO 0 wasn't found, prefer a 256-entry chunk.
+	if candidate.CNO != 0 {
+		for _, c := range glcrChunks {
+			data, err := ChunkData(r, c)
+			if err != nil {
+				continue
+			}
+			entries, err := readGLColors(data)
+			if err != nil {
+				continue
+			}
+			if len(entries) == 256 {
+				candidate = c
+				break
+			}
+		}
+	}
+
+	data, err := ChunkData(r, candidate)
+	if err != nil {
+		return Palette{}, false, fmt.Errorf("FindGLCR: reading chunk: %w", err)
+	}
+	entries, err := readGLColors(data)
+	if err != nil {
+		return Palette{}, false, fmt.Errorf("FindGLCR: parsing chunk: %w", err)
+	}
+
+	pal := GrayscalePalette()
+	for i, e := range entries {
+		if i >= len(pal.Colors) {
+			break
+		}
+		pal.Colors[i] = e
+	}
+	return pal, true, nil
+}
+
 // LoadBackgroundScene reads a BKGD chunk and its children from cf, returning
-// the decoded background with all camera angles.
+// the decoded background with all camera angles. base is the 256-entry
+// palette used as the starting point before the BKGD's own GLCR patch is applied.
 //
 // r must be the io.ReaderAt for the chunky file that cf was parsed from.
 // bkgdCTG/bkgdCNO identify the BKGD chunk to load.
-func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32) (*BackgroundScene, error) {
+func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32, base Palette) (*BackgroundScene, error) {
 	bkgdChunk, ok := cf.FindChunk(bkgdCTG, bkgdCNO)
 	if !ok {
 		return nil, fmt.Errorf("bkgd: chunk %s/0x%08X not found", ctgToString(bkgdCTG), bkgdCNO)
@@ -65,7 +134,7 @@ func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32)
 	indexBase := int(raw[4])
 
 	// Load the GLCR child (custom palette), if present.
-	scenePalette := globalPalette
+	scenePalette := base
 	if glcrChunk, ok := cf.FindChildByChidCTG(bkgdChunk, 0, ctgGLCR); ok {
 		glcrData, err := ChunkData(r, glcrChunk)
 		if err != nil {
@@ -75,7 +144,7 @@ func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32)
 		if err != nil {
 			return nil, fmt.Errorf("bkgd: parsing GLCR: %w", err)
 		}
-		scenePalette = patchPalette(globalPalette, entries, indexBase)
+		scenePalette = patchPalette(base, entries, indexBase)
 	}
 
 	// Load each CAM child (chid 0, 1, 2, ...) and its MBMP grandchild.
