@@ -22,6 +22,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Commands:")
 		fmt.Fprintln(os.Stderr, "  chunky      List or extract chunks from a chunky file (.chk)")
 		fmt.Fprintln(os.Stderr, "  mbmp        Decode an MBMP chunk and write it as a PNG image")
+		fmt.Fprintln(os.Stderr, "  bkgd        Render background camera angles from a chunky file to the terminal")
 		fmt.Fprintln(os.Stderr, "  genpalette  Generate a palette from two images")
 	}
 	flag.Parse()
@@ -36,6 +37,8 @@ func main() {
 		chunkyMain(flag.Args()[1:])
 	case "mbmp":
 		mbmpMain(flag.Args()[1:])
+	case "bkgd":
+		bkgdMain(flag.Args()[1:])
 	case "genpalette":
 		genpaletteMain(flag.Args()[1:])
 	default:
@@ -325,6 +328,102 @@ func loadPalette(path string) []color.RGBA {
 		pal[i] = color.RGBA{R: data[i*4], G: data[i*4+1], B: data[i*4+2], A: data[i*4+3]}
 	}
 	return pal
+}
+
+func bkgdMain(args []string) {
+	fs := flag.NewFlagSet("bkgd", flag.ExitOnError)
+	cnoVal := fs.Int("cno", -1, "BKGD chunk number (-1 = first found)")
+	paletteFile := fs.String("palette", "", "Palette file (1024 bytes: 256 × RGBA); if omitted, grayscale")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go bkgd [-cno N] [-palette palette.bin] <file.chk>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Render each camera angle of a BKGD chunk to the terminal.")
+		fmt.Fprintln(os.Stderr, "Without -palette, indices are rendered as grayscale.")
+		fmt.Fprintln(os.Stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	f, err := os.Open(fs.Arg(0))
+	if err != nil {
+		fatalf("open %s: %v", fs.Arg(0), err)
+	}
+	defer f.Close()
+
+	cf, err := ParseChunkyFile(f)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	// Find the BKGD chunk.
+	var bkgdChunk Chunk
+	var found bool
+	if *cnoVal >= 0 {
+		bkgdChunk, found = cf.FindChunk(ctgBKGD, uint32(*cnoVal))
+		if !found {
+			fatalf("BKGD chunk with CNO 0x%08X not found", uint32(*cnoVal))
+		}
+	} else {
+		for _, c := range cf.Chunks {
+			if c.CTG == ctgBKGD {
+				bkgdChunk = c
+				found = true
+				break
+			}
+		}
+		if !found {
+			fatalf("no BKGD chunk found in %s", fs.Arg(0))
+		}
+	}
+
+	// Optionally load a palette into globalPalette before decoding.
+	var pal []color.RGBA
+	if *paletteFile != "" {
+		pal = loadPalette(*paletteFile)
+		colors := make([]color.Color, len(pal))
+		for i, c := range pal {
+			colors[i] = c
+		}
+		globalPalette = Palette{Colors: colors}
+	}
+
+	scene, err := LoadBackgroundScene(f, cf, bkgdChunk.CTG, bkgdChunk.CNO)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	fmt.Printf("BKGD 0x%08X: %d camera angle(s), palette base index %d\n\n",
+		bkgdChunk.CNO, len(scene.Angles), scene.IndexBase)
+
+	for _, angle := range scene.Angles {
+		fmt.Printf("Camera %d\n", angle.Index)
+
+		bounds := angle.Img.Bounds()
+		out := image.NewNRGBA(bounds)
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				c := angle.Img.At(x, y).(MBMPColor)
+				if pal != nil {
+					pc := scene.Palette.Colors[c.Index]
+					r, g, b, _ := pc.RGBA()
+					out.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: c.A})
+				} else {
+					out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
+				}
+			}
+		}
+
+		if err, _ := imgterm.Display(out); err != nil {
+			fatalf("display camera %d: %v", angle.Index, err)
+		}
+		fmt.Println()
+	}
 }
 
 func genpaletteMain(args []string) {
