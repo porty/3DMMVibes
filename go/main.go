@@ -333,8 +333,9 @@ func loadPalette(path string) []color.RGBA {
 func bkgdMain(args []string) {
 	fs := flag.NewFlagSet("bkgd", flag.ExitOnError)
 	cnoVal := fs.Int("cno", -1, "BKGD chunk number (-1 = first found)")
+	zbuf := fs.Bool("z", false, "Render z-buffer as grayscale (white=close, black=far) instead of color")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go bkgd [-cno N] <file.chk>")
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go bkgd [-cno N] [-z] <file.chk>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Render each camera angle of a BKGD chunk to the terminal.")
 		fmt.Fprintln(os.Stderr, "The palette is loaded automatically from a GLCR chunk in the file.")
@@ -403,14 +404,35 @@ func bkgdMain(args []string) {
 	for _, angle := range scene.Angles {
 		fmt.Printf("Camera %d\n", angle.Index)
 
-		bounds := angle.Img.Bounds()
-		out := image.NewNRGBA(bounds)
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				c := angle.Img.At(x, y).(MBMPColor)
-				pc := scene.Palette.Colors[c.Index]
-				r, g, b, _ := pc.RGBA()
-				out.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: c.A})
+		var out *image.NRGBA
+
+		if *zbuf {
+			if angle.ZBuf == nil {
+				fmt.Fprintf(os.Stderr, "camera %d: no ZBMP chunk found, skipping\n", angle.Index)
+				continue
+			}
+			bounds := angle.ZBuf.Rect
+			out = image.NewNRGBA(bounds)
+			dx := bounds.Dx()
+			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+				for x := bounds.Min.X; x < bounds.Max.X; x++ {
+					i := (y-bounds.Min.Y)*dx + (x - bounds.Min.X)
+					z := angle.ZBuf.Pix[i]
+					// 0x0000 = closest (white), 0xFFFF = farthest (black)
+					gray := 255 - uint8(z>>8)
+					out.SetNRGBA(x, y, color.NRGBA{R: gray, G: gray, B: gray, A: 255})
+				}
+			}
+		} else {
+			bounds := angle.Img.Bounds()
+			out = image.NewNRGBA(bounds)
+			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+				for x := bounds.Min.X; x < bounds.Max.X; x++ {
+					c := angle.Img.At(x, y).(MBMPColor)
+					pc := scene.Palette.Colors[c.Index]
+					r, g, b, _ := pc.RGBA()
+					out.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: c.A})
+				}
 			}
 		}
 

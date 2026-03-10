@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"image"
 	"image/color"
 	"io"
 )
@@ -14,12 +15,62 @@ const (
 	ctgCAM  = uint32('C')<<24 | uint32('A')<<16 | uint32('M')<<8 | uint32(' ')
 	ctgMBMP = uint32('M')<<24 | uint32('B')<<16 | uint32('M')<<8 | uint32('P')
 	ctgGLCR = uint32('G')<<24 | uint32('L')<<16 | uint32('C')<<8 | uint32('R')
+	ctgZBMP = uint32('Z')<<24 | uint32('B')<<16 | uint32('M')<<8 | uint32('P')
 )
+
+// ZBMPImage is a decoded ZBMP (Z-buffer) chunk.
+//
+// Pixels are stored in bounding-rect space with stride = Rect.Dx().
+// Index i = (y-Rect.Min.Y)*Rect.Dx() + (x-Rect.Min.X).
+// Values are 16-bit z-depths: 0x0000 = closest, 0xFFFF = farthest (cleared).
+type ZBMPImage struct {
+	Pix  []uint16       // z-values, row-major
+	Rect image.Rectangle
+}
+
+// ReadZBMP reads a ZBMP chunk from r and returns the decoded z-buffer.
+func ReadZBMP(r io.Reader) (*ZBMPImage, error) {
+	// ZBMPF header: bo(2), osk(2), xpLeft(2), ypTop(2), dxp(2), dyp(2) = 12 bytes
+	var hdr [12]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, fmt.Errorf("zbmp: read header: %w", err)
+	}
+	bo := int16(binary.LittleEndian.Uint16(hdr[0:2]))
+	var u16 func([]byte) uint16
+	switch bo {
+	case 0x0001:
+		u16 = binary.LittleEndian.Uint16
+	case 0x0100:
+		u16 = binary.BigEndian.Uint16
+	default:
+		return nil, fmt.Errorf("zbmp: unknown byte order 0x%04X", uint16(bo))
+	}
+	xpLeft := int(int16(u16(hdr[4:6])))
+	ypTop := int(int16(u16(hdr[6:8])))
+	dxp := int(int16(u16(hdr[8:10])))
+	dyp := int(int16(u16(hdr[10:12])))
+	if dxp <= 0 || dyp <= 0 {
+		return nil, fmt.Errorf("zbmp: invalid dimensions %dx%d", dxp, dyp)
+	}
+	raw := make([]byte, dxp*dyp*2)
+	if _, err := io.ReadFull(r, raw); err != nil {
+		return nil, fmt.Errorf("zbmp: read pixels: %w", err)
+	}
+	pix := make([]uint16, dxp*dyp)
+	for i := range pix {
+		pix[i] = u16(raw[i*2:])
+	}
+	return &ZBMPImage{
+		Pix:  pix,
+		Rect: image.Rect(xpLeft, ypTop, xpLeft+dxp, ypTop+dyp),
+	}, nil
+}
 
 // CameraAngle holds the decoded background image for one camera position.
 type CameraAngle struct {
 	Index int        // 0-based camera index (CHID of the CAM chunk)
 	Img   *MBMPImage // palette-indexed background bitmap
+	ZBuf  *ZBMPImage // z-buffer, or nil if no ZBMP child in this CAM
 }
 
 // BackgroundScene is a decoded BKGD chunk with all camera angles.
@@ -166,7 +217,21 @@ func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32,
 		if err != nil {
 			return nil, fmt.Errorf("bkgd: decoding MBMP for CAM %d: %w", chid, err)
 		}
-		angles = append(angles, CameraAngle{Index: int(chid), Img: img})
+
+		// Load the optional ZBMP z-buffer child (same CHID 0, different CTG).
+		var zbuf *ZBMPImage
+		if zbmpChunk, ok := cf.FindChildByChidCTG(camChunk, 0, ctgZBMP); ok {
+			zbmpData, err := ChunkData(r, zbmpChunk)
+			if err != nil {
+				return nil, fmt.Errorf("bkgd: reading ZBMP for CAM %d: %w", chid, err)
+			}
+			zbuf, err = ReadZBMP(bytes.NewReader(zbmpData))
+			if err != nil {
+				return nil, fmt.Errorf("bkgd: decoding ZBMP for CAM %d: %w", chid, err)
+			}
+		}
+
+		angles = append(angles, CameraAngle{Index: int(chid), Img: img, ZBuf: zbuf})
 	}
 
 	return &BackgroundScene{
