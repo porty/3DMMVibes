@@ -334,8 +334,9 @@ func bkgdMain(args []string) {
 	fs := flag.NewFlagSet("bkgd", flag.ExitOnError)
 	cnoVal := fs.Int("cno", -1, "BKGD chunk number (-1 = first found)")
 	zbuf := fs.Bool("z", false, "Render z-buffer as grayscale (white=close, black=far) instead of color")
+	zmul := fs.Float64("zmul", 1.0, "Z-buffer contrast multiplier (>1 boosts contrast, only used with -z)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go bkgd [-cno N] [-z] <file.chk>")
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go bkgd [-cno N] [-z] [-zmul N] <file.chk>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Render each camera angle of a BKGD chunk to the terminal.")
 		fmt.Fprintln(os.Stderr, "The palette is loaded automatically from a GLCR chunk in the file.")
@@ -419,7 +420,11 @@ func bkgdMain(args []string) {
 					i := (y-bounds.Min.Y)*dx + (x - bounds.Min.X)
 					z := angle.ZBuf.Pix[i]
 					// 0x0000 = closest (white), 0xFFFF = farthest (black)
-					gray := 255 - uint8(z>>8)
+					gf := (1.0 - float64(z)/0xFFFF) * 255 * *zmul
+					if gf > 255 {
+						gf = 255
+					}
+					gray := uint8(gf)
 					out.SetNRGBA(x, y, color.NRGBA{R: gray, G: gray, B: gray, A: 255})
 				}
 			}
