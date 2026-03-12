@@ -24,6 +24,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  mbmp        Decode an MBMP chunk and write it as a PNG image")
 		fmt.Fprintln(os.Stderr, "  bkgd        Render background camera angles from a chunky file to the terminal")
 		fmt.Fprintln(os.Stderr, "  genpalette  Generate a palette from two images")
+		fmt.Fprintln(os.Stderr, "  dag         Write a Graphviz DOT file of the chunk parent→child graph")
 	}
 	flag.Parse()
 
@@ -41,6 +42,8 @@ func main() {
 		bkgdMain(flag.Args()[1:])
 	case "genpalette":
 		genpaletteMain(flag.Args()[1:])
+	case "dag":
+		dagMain(flag.Args()[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", flag.Arg(0))
 		flag.Usage()
@@ -508,6 +511,59 @@ func loadImage(path string) image.Image {
 		fatalf("decode %s: %v", path, err)
 	}
 	return img
+}
+
+func dagMain(args []string) {
+	fs := flag.NewFlagSet("dag", flag.ExitOnError)
+	outFile := fs.String("o", "", "Output DOT file (default: stdout)")
+	ctgStr := fs.String("ctg", "", `Filter by chunk type (4 chars, e.g. "MVIE")`)
+	cnoVal := fs.Int("cno", -1, "Filter by chunk number (-1 = all chunks)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go dag [-o output.dot] [-ctg TYPE] [-cno NUM] <file.chk>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Write a Graphviz DOT digraph of chunk parent→child relationships.")
+		fmt.Fprintln(os.Stderr, "Render with: dot -Tpng -o graph.png output.dot")
+		fmt.Fprintln(os.Stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	f, err := os.Open(fs.Arg(0))
+	if err != nil {
+		fatalf("open %s: %v", fs.Arg(0), err)
+	}
+	defer f.Close()
+
+	cf, err := ParseChunkyFile(f)
+	if err != nil {
+		fatalf("%v", err)
+	}
+
+	// When a filter is applied, restrict to those chunks but preserve their
+	// KID edges so referenced children still appear in the graph.
+	if *ctgStr != "" || *cnoVal >= 0 {
+		cf.Chunks = applyFilters(cf.Chunks, *ctgStr, *cnoVal)
+	}
+
+	var w io.Writer
+	if *outFile == "" {
+		w = os.Stdout
+	} else {
+		df, err := os.Create(*outFile)
+		if err != nil {
+			fatalf("create %s: %v", *outFile, err)
+		}
+		defer df.Close()
+		w = df
+	}
+
+	ChunkDAG(cf, w)
 }
 
 func fatalf(format string, args ...any) {
