@@ -25,6 +25,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  bkgd        Render background camera angles from a chunky file to the terminal")
 		fmt.Fprintln(os.Stderr, "  genpalette  Generate a palette from two images")
 		fmt.Fprintln(os.Stderr, "  dag         Write a Graphviz DOT file of the chunk parent→child graph")
+		fmt.Fprintln(os.Stderr, "  render      Render a .3MM movie to a sequence of PNG frames")
 	}
 	flag.Parse()
 
@@ -44,6 +45,8 @@ func main() {
 		genpaletteMain(flag.Args()[1:])
 	case "dag":
 		dagMain(flag.Args()[1:])
+	case "render":
+		renderMain(flag.Args()[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", flag.Arg(0))
 		flag.Usage()
