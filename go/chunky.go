@@ -74,10 +74,11 @@ type KID struct {
 
 // ChunkyFile is the result of parsing a chunky file header and index.
 type ChunkyFile struct {
-	Creator uint32 // CTG of the program that wrote this file
-	VerCur  int16  // current format version
-	VerBack int16  // oldest version that can read this file
-	Chunks  []Chunk
+	Creator   uint32 // CTG of the program that wrote this file
+	VerCur    int16  // current format version
+	VerBack   int16  // oldest version that can read this file
+	CRPFormat int32  // fixed-part size: crpsmFixedSize (20) or crpbgFixedSize (32)
+	Chunks    []Chunk
 }
 
 // Chunk is a single entry from the chunky file index.
@@ -89,6 +90,8 @@ type Chunk struct {
 	Flags  uint32 // fcrp* bitmask flags
 	CKid   int    // number of child-chunk references
 	Kids   []KID  // child-chunk references, length == CKid
+	Name   string // optional chunk name (STN, may be empty)
+	Order  int    // 0-based position in the original GG LOC array (non-deleted slots only)
 }
 
 // IsPacked reports whether the chunk data is compressed.
@@ -191,15 +194,16 @@ func ParseChunkyFile(rs io.ReadSeeker) (*ChunkyFile, error) {
 		return nil, fmt.Errorf("reading index (%d bytes at 0x%X): %w", hdr.CbIndex, hdr.FpIndex, err)
 	}
 
-	chunks, err := parseGGIndex(indexData, hdr.VerCur)
+	chunks, cbFixed, err := parseGGIndex(indexData, hdr.VerCur)
 	if err != nil {
 		return nil, fmt.Errorf("parsing index: %w", err)
 	}
 	return &ChunkyFile{
-		Creator: hdr.Creator,
-		VerCur:  hdr.VerCur,
-		VerBack: hdr.VerBack,
-		Chunks:  chunks,
+		Creator:   hdr.Creator,
+		VerCur:    hdr.VerCur,
+		VerBack:   hdr.VerBack,
+		CRPFormat: cbFixed,
+		Chunks:    chunks,
 	}, nil
 }
 
@@ -207,21 +211,21 @@ func ParseChunkyFile(rs io.ReadSeeker) (*ChunkyFile, error) {
 // Internal parsing
 // -------------------------------------------------------------------
 
-func parseGGIndex(data []byte, fileVer int16) ([]Chunk, error) {
+func parseGGIndex(data []byte, fileVer int16) ([]Chunk, int32, error) {
 	const ggfSize = 20
 	if len(data) < ggfSize {
-		return nil, fmt.Errorf("index too small (%d bytes, need at least %d)", len(data), ggfSize)
+		return nil, 0, fmt.Errorf("index too small (%d bytes, need at least %d)", len(data), ggfSize)
 	}
 
 	var hdr ggfDisk
 	if err := binary.Read(bytes.NewReader(data[:ggfSize]), binary.LittleEndian, &hdr); err != nil {
-		return nil, fmt.Errorf("reading GGF header: %w", err)
+		return nil, 0, fmt.Errorf("reading GGF header: %w", err)
 	}
 	if hdr.ByteOrder != kboCur {
-		return nil, fmt.Errorf("index has unsupported byte order 0x%04X", uint16(hdr.ByteOrder))
+		return nil, 0, fmt.Errorf("index has unsupported byte order 0x%04X", uint16(hdr.ByteOrder))
 	}
 	if hdr.IlocMac < 0 || hdr.BvMac < 0 || hdr.CbFixed <= 0 {
-		return nil, fmt.Errorf("malformed GGF: ilocMac=%d bvMac=%d cbFixed=%d",
+		return nil, 0, fmt.Errorf("malformed GGF: ilocMac=%d bvMac=%d cbFixed=%d",
 			hdr.IlocMac, hdr.BvMac, hdr.CbFixed)
 	}
 
@@ -229,7 +233,7 @@ func parseGGIndex(data []byte, fileVer int16) ([]Chunk, error) {
 	locArraySize := int(hdr.IlocMac) * 8
 	need := ggfSize + int(hdr.BvMac) + locArraySize
 	if len(data) < need {
-		return nil, fmt.Errorf("index too short: have %d bytes, need %d (ggf=%d vardata=%d locs=%d)",
+		return nil, 0, fmt.Errorf("index too short: have %d bytes, need %d (ggf=%d vardata=%d locs=%d)",
 			len(data), need, ggfSize, hdr.BvMac, locArraySize)
 	}
 
@@ -238,27 +242,30 @@ func parseGGIndex(data []byte, fileVer int16) ([]Chunk, error) {
 	oldIndex := fileVer > 0 && fileVer < kcvnMinGrfcrp
 
 	var chunks []Chunk
+	order := 0
 	for i := range int(hdr.IlocMac) {
 		off := locsStart + i*8
 		var l locDisk
 		if err := binary.Read(bytes.NewReader(data[off:off+8]), binary.LittleEndian, &l); err != nil {
-			return nil, fmt.Errorf("reading LOC[%d]: %w", i, err)
+			return nil, 0, fmt.Errorf("reading LOC[%d]: %w", i, err)
 		}
 		if l.Bv == bvNilValue {
 			continue // free/deleted slot
 		}
 		bv, cb := int(l.Bv), int(l.Cb)
 		if bv < 0 || bv+cb > len(varData) {
-			return nil, fmt.Errorf("LOC[%d] out of bounds: bv=%d cb=%d (vardata len=%d)",
+			return nil, 0, fmt.Errorf("LOC[%d] out of bounds: bv=%d cb=%d (vardata len=%d)",
 				i, l.Bv, l.Cb, len(varData))
 		}
 		c, err := parseCRP(varData[bv:bv+cb], hdr.CbFixed, oldIndex)
 		if err != nil {
-			return nil, fmt.Errorf("parsing CRP[%d]: %w", i, err)
+			return nil, 0, fmt.Errorf("parsing CRP[%d]: %w", i, err)
 		}
+		c.Order = order
+		order++
 		chunks = append(chunks, c)
 	}
-	return chunks, nil
+	return chunks, hdr.CbFixed, nil
 }
 
 // parseCRP interprets an entry from the variable-data blob as either a CRPSM
@@ -278,6 +285,7 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 		if err != nil {
 			return Chunk{}, fmt.Errorf("parsing CRPSM kids: %w", err)
 		}
+		stnOff := crpsmFixedSize + ckid*12
 		return Chunk{
 			CTG:    crp.CTG,
 			CNO:    crp.CNO,
@@ -286,6 +294,7 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 			Flags:  crp.LuGrfcrpCb & 0xFF,
 			CKid:   ckid,
 			Kids:   kids,
+			Name:   parseSTN(data[stnOff:]),
 		}, nil
 
 	case crpbgFixedSize:
@@ -313,6 +322,7 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 		if err != nil {
 			return Chunk{}, fmt.Errorf("parsing CRPBG kids: %w", err)
 		}
+		stnOff := crpbgFixedSize + ckid*12
 		return Chunk{
 			CTG:    crp.CTG,
 			CNO:    crp.CNO,
@@ -321,12 +331,26 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 			Flags:  grfcrp,
 			CKid:   ckid,
 			Kids:   kids,
+			Name:   parseSTN(data[stnOff:]),
 		}, nil
 
 	default:
 		return Chunk{}, fmt.Errorf("unknown CRP fixed size %d (expected %d for CRPSM or %d for CRPBG)",
 			cbFixed, crpsmFixedSize, crpbgFixedSize)
 	}
+}
+
+// parseSTN reads a 2-byte LE length-prefixed string from the start of data.
+// Returns the string or "" if data is too short or the length is zero.
+func parseSTN(data []byte) string {
+	if len(data) < 2 {
+		return ""
+	}
+	n := int(binary.LittleEndian.Uint16(data[:2]))
+	if n == 0 || len(data) < 2+n {
+		return ""
+	}
+	return string(data[2 : 2+n])
 }
 
 // parseKIDs reads ckid KID records from the start of varData.

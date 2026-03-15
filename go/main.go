@@ -61,11 +61,13 @@ func chunkyMain(args []string) {
 	ctgStr := fs.String("ctg", "", `Filter by chunk type (4 chars, e.g. "MVIE")`)
 	cnoVal := fs.Int("cno", -1, "Filter by chunk number (-1 = all chunks)")
 	verbose := fs.Bool("v", false, "Print each file written during extraction")
+	rawMode := fs.Bool("raw", false, "Keep raw (possibly compressed) chunk bytes for exact reconstruction; writes manifest.json")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go chunky [flags] <file.chk>")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Without -extract, lists all chunks. With -extract, writes each chunk")
-		fmt.Fprintln(os.Stderr, "to a file named <CTG>_<CNO>.bin in -outdir.")
+		fmt.Fprintln(os.Stderr, "to a file named <CTG>_<CNO>.bin in -outdir, plus a manifest.json.")
+		fmt.Fprintln(os.Stderr, "Use -raw to store compressed bytes verbatim (enables byte-for-byte reconstruction).")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Flags legend: P=packed(compressed)  F=forest(nested chunky)  X=on-extra-file")
 		fmt.Fprintln(os.Stderr, "")
@@ -95,7 +97,7 @@ func chunkyMain(args []string) {
 	chunks := applyFilters(cf.Chunks, *ctgStr, *cnoVal)
 
 	if *doExtract {
-		if err := extractChunks(f, chunks, *outDir, *verbose); err != nil {
+		if err := extractChunks(f, cf, path, chunks, *outDir, *verbose, *rawMode); err != nil {
 			fatalf("%v", err)
 		}
 	} else {
@@ -153,20 +155,23 @@ func flagsString(c Chunk) string {
 	return b.String()
 }
 
-// extractChunks writes each chunk's data to outDir/<CTG>_<CNO>.bin.
-// Packed chunks are decompressed before writing.
-// Chunks with FcrpOnExtra are skipped since their data is not in the main file.
-func extractChunks(r io.ReaderAt, chunks []Chunk, outDir string, verbose bool) error {
+// extractChunks writes each chunk's data to outDir/<CTG>_<CNO>.bin and writes
+// a manifest.json summarising all chunks. Packed chunks are decompressed unless
+// raw is true. Chunks with FcrpOnExtra are skipped.
+func extractChunks(r io.ReaderAt, cf *ChunkyFile, sourcePath string, chunks []Chunk, outDir string, verbose, raw bool) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("creating output directory %s: %w", outDir, err)
 	}
 
 	var extracted, skipped int
+	var manifestChunks []ManifestChunk
+
 	for _, c := range chunks {
 		tag := ctgToString(c.CTG)
 		if c.IsOnExtra() {
 			fmt.Fprintf(os.Stderr, "skip %s/0x%08X: data is on companion file (fcrpOnExtra)\n", tag, c.CNO)
 			skipped++
+			manifestChunks = append(manifestChunks, buildManifestChunk(c, nil, nil, nil))
 			continue
 		}
 
@@ -174,20 +179,38 @@ func extractChunks(r io.ReaderAt, chunks []Chunk, outDir string, verbose bool) e
 		dest := filepath.Join(outDir, name)
 
 		var data []byte
+		var compressed bool
+		var sizeUnpacked int32
+
 		if c.Size > 0 {
-			raw := make([]byte, c.Size)
-			if _, err := r.ReadAt(raw, int64(c.Offset)); err != nil {
+			rawBytes := make([]byte, c.Size)
+			if _, err := r.ReadAt(rawBytes, int64(c.Offset)); err != nil {
 				return fmt.Errorf("reading %s/0x%08X at 0x%X: %w", tag, c.CNO, c.Offset, err)
 			}
-			if c.IsPacked() {
-				var err error
-				data, err = DecodeKauaiChunk(raw)
-				if err != nil {
-					return fmt.Errorf("decompressing %s/0x%08X: %w", tag, c.CNO, err)
+			if raw {
+				data = rawBytes
+				compressed = c.IsPacked()
+				if c.IsPacked() {
+					sizeUnpacked = peekUnpackedSize(rawBytes)
+				} else {
+					sizeUnpacked = c.Size
 				}
 			} else {
-				data = raw
+				if c.IsPacked() {
+					var err error
+					data, err = DecodeKauaiChunk(rawBytes)
+					if err != nil {
+						return fmt.Errorf("decompressing %s/0x%08X: %w", tag, c.CNO, err)
+					}
+					sizeUnpacked = int32(len(data))
+				} else {
+					data = rawBytes
+					sizeUnpacked = c.Size
+				}
+				compressed = false
 			}
+		} else {
+			sizeUnpacked = 0
 		}
 
 		if err := os.WriteFile(dest, data, 0o644); err != nil {
@@ -197,7 +220,11 @@ func extractChunks(r io.ReaderAt, chunks []Chunk, outDir string, verbose bool) e
 		if verbose {
 			extra := ""
 			if c.IsPacked() {
-				extra = " [decompressed]"
+				if raw {
+					extra = " [raw/compressed]"
+				} else {
+					extra = " [decompressed]"
+				}
 			}
 			if c.IsForest() {
 				extra += " [forest]"
@@ -205,6 +232,10 @@ func extractChunks(r io.ReaderAt, chunks []Chunk, outDir string, verbose bool) e
 			fmt.Printf("wrote %s (%d bytes)%s\n", name, len(data), extra)
 		}
 		extracted++
+
+		su := sizeUnpacked
+		co := compressed
+		manifestChunks = append(manifestChunks, buildManifestChunk(c, &name, &co, &su))
 	}
 
 	fmt.Printf("extracted %d chunks to %s", extracted, outDir)
@@ -212,6 +243,20 @@ func extractChunks(r io.ReaderAt, chunks []Chunk, outDir string, verbose bool) e
 		fmt.Printf(" (%d skipped, on companion file)", skipped)
 	}
 	fmt.Println()
+
+	m := &Manifest{
+		SourceFile:   filepath.Base(sourcePath),
+		Creator:      ctgToString(cf.Creator),
+		VerCur:       cf.VerCur,
+		VerBack:      cf.VerBack,
+		CRPFormat:    crpFormatString(cf.CRPFormat),
+		ExtractedRaw: raw,
+		Chunks:       manifestChunks,
+	}
+	if err := writeManifest(outDir, m); err != nil {
+		return err
+	}
+	fmt.Printf("wrote manifest.json to %s\n", outDir)
 	return nil
 }
 
