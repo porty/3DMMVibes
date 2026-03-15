@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/urfave/cli/v2"
 )
 
 // actorColors is a fixed palette of 8 distinct semi-transparent NRGBA colors
@@ -199,43 +200,43 @@ func FindBKGDInDir(dir string, cno uint32) (*ChunkyFile, *os.File, Chunk, error)
 	return nil, nil, Chunk{}, fmt.Errorf("FindBKGDInDir: no BKGD/0x%08X in %q", cno, dir)
 }
 
-// renderMain is the entry point for the `render` subcommand.
-func renderMain(args []string) {
-	fs := flag.NewFlagSet("render", flag.ExitOnError)
-	outDir := fs.String("outdir", "frames", "Output directory for PNG frames")
-	sceneN := fs.Int("scene", -1, "Render only scene N (0-based); -1 = all scenes")
-	bkgdDir := fs.String("bkgddir", "", "Directory containing background content files (.3cn/.3th/.chk)")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go render [-outdir DIR] [-scene N] [-bkgddir DIR] <movie.3mm>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Render each frame of a .3MM movie as a PNG image.")
-		fmt.Fprintln(os.Stderr, "Backgrounds use the correct camera angle per frame.")
-		fmt.Fprintln(os.Stderr, "Actors are shown as colored circles (full 3D rendering is future work).")
-		fmt.Fprintln(os.Stderr, "")
-		fs.PrintDefaults()
+// renderCommand returns the `render` command.
+func renderCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "render",
+		Usage:     "Render a .3MM movie to a sequence of PNG frames",
+		ArgsUsage: "<movie.3mm>",
+		Description: "Render each frame of a .3MM movie as a PNG image.\n" +
+			"Backgrounds use the correct camera angle per frame.\n" +
+			"Actors are shown as colored circles (full 3D rendering is future work).",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "outdir", Value: "frames", Usage: "Output directory for PNG frames"},
+			&cli.IntFlag{Name: "scene", Value: -1, Usage: "Render only scene N (0-based); -1 = all scenes"},
+			&cli.StringFlag{Name: "bkgddir", Usage: "Directory containing background content files (.3cn/.3th/.chk)"},
+		},
+		Action: renderAction,
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
+}
+
+func renderAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
 
-	f, err := os.Open(fs.Arg(0))
+	path := c.Args().First()
+	f, err := os.Open(path)
 	if err != nil {
-		fatalf("open %s: %v", fs.Arg(0), err)
+		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
 	cf, err := ParseChunkyFile(f)
 	if err != nil {
-		fatalf("parsing %s: %v", fs.Arg(0), err)
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	if err := RenderMovie(*outDir, *sceneN, *bkgdDir, cf, f); err != nil {
-		fatalf("%v", err)
-	}
+	return RenderMovie(c.String("outdir"), c.Int("scene"), c.String("bkgddir"), cf, f)
 }
 
 // RenderMovie renders all (or one) scene from cf to outDir.

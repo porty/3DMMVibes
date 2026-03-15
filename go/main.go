@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,96 +12,105 @@ import (
 	"strings"
 
 	"github.com/porty/3dmm-go/imgterm"
+	"github.com/urfave/cli/v2"
 )
 
 func main() {
-	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go <command> [flags]")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Commands:")
-		fmt.Fprintln(os.Stderr, "  chunky      List or extract chunks from a chunky file (.chk)")
-		fmt.Fprintln(os.Stderr, "  mbmp        Decode an MBMP chunk and write it as a PNG image")
-		fmt.Fprintln(os.Stderr, "  bkgd        Render background camera angles from a chunky file to the terminal")
-		fmt.Fprintln(os.Stderr, "  genpalette  Generate a palette from two images")
-		fmt.Fprintln(os.Stderr, "  dag         Write a Graphviz DOT file of the chunk parent→child graph")
-		fmt.Fprintln(os.Stderr, "  render      Render a .3MM movie to a sequence of PNG frames")
+	app := &cli.App{
+		Name:  "3dmm-go",
+		Usage: "Tools for working with 3D Movie Maker files",
+		Commands: []*cli.Command{
+			chunkyCommand(),
+			mbmpCommand(),
+			bkgdCommand(),
+			genpaletteCommand(),
+			dagCommand(),
+			renderCommand(),
+		},
 	}
-	flag.Parse()
-
-	if flag.NArg() < 1 {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	switch flag.Arg(0) {
-	case "chunky":
-		chunkyMain(flag.Args()[1:])
-	case "mbmp":
-		mbmpMain(flag.Args()[1:])
-	case "bkgd":
-		bkgdMain(flag.Args()[1:])
-	case "genpalette":
-		genpaletteMain(flag.Args()[1:])
-	case "dag":
-		dagMain(flag.Args()[1:])
-	case "render":
-		renderMain(flag.Args()[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", flag.Arg(0))
-		flag.Usage()
+	if err := app.Run(os.Args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func chunkyMain(args []string) {
-	fs := flag.NewFlagSet("chunky", flag.ExitOnError)
-	doExtract := fs.Bool("extract", false, "Extract chunks to individual files")
-	outDir := fs.String("outdir", ".", "Output directory for extracted chunks")
-	ctgStr := fs.String("ctg", "", `Filter by chunk type (4 chars, e.g. "MVIE")`)
-	cnoVal := fs.Int("cno", -1, "Filter by chunk number (-1 = all chunks)")
-	verbose := fs.Bool("v", false, "Print each file written during extraction")
-	rawMode := fs.Bool("raw", false, "Keep raw (possibly compressed) chunk bytes for exact reconstruction; writes manifest.json")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go chunky [flags] <file.chk>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Without -extract, lists all chunks. With -extract, writes each chunk")
-		fmt.Fprintln(os.Stderr, "to a file named <CTG>_<CNO>.bin in -outdir, plus a manifest.json.")
-		fmt.Fprintln(os.Stderr, "Use -raw to store compressed bytes verbatim (enables byte-for-byte reconstruction).")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Flags legend: P=packed(compressed)  F=forest(nested chunky)  X=on-extra-file")
-		fmt.Fprintln(os.Stderr, "")
-		fs.PrintDefaults()
+// chunkyCommand returns the `chunky` command with list/extract subcommands.
+func chunkyCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "chunky",
+		Usage: "List or extract chunks from a chunky file (.chk)",
+		Subcommands: []*cli.Command{
+			{
+				Name:      "list",
+				Usage:     "List all chunks in a chunky file",
+				ArgsUsage: "<file.chk>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "ctg", Usage: `Filter by chunk type (4 chars, e.g. "MVIE")`},
+					&cli.IntFlag{Name: "cno", Value: -1, Usage: "Filter by chunk number (-1 = all chunks)"},
+				},
+				Action: chunkyListAction,
+			},
+			{
+				Name:      "extract",
+				Usage:     "Extract chunks to individual files",
+				ArgsUsage: "<file.chk>",
+				Description: "Writes each chunk to a file named <CTG>_<CNO>.bin in --outdir, plus a manifest.json.\n" +
+					"Use --raw to store compressed bytes verbatim (enables byte-for-byte reconstruction).\n\n" +
+					"Flags legend: P=packed(compressed)  F=forest(nested chunky)  X=on-extra-file",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "outdir", Value: ".", Usage: "Output directory for extracted chunks"},
+					&cli.StringFlag{Name: "ctg", Usage: `Filter by chunk type (4 chars, e.g. "MVIE")`},
+					&cli.IntFlag{Name: "cno", Value: -1, Usage: "Filter by chunk number (-1 = all chunks)"},
+					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "Print each file written during extraction"},
+					&cli.BoolFlag{Name: "raw", Usage: "Keep raw (possibly compressed) chunk bytes for exact reconstruction; writes manifest.json"},
+				},
+				Action: chunkyExtractAction,
+			},
+		},
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
+}
 
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
+func chunkyListAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
-
-	path := fs.Arg(0)
+	path := c.Args().First()
 	f, err := os.Open(path)
 	if err != nil {
-		fatalf("open %s: %v", path, err)
+		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
 	cf, err := ParseChunkyFile(f)
 	if err != nil {
-		fatalf("%v", err)
+		return err
 	}
 
-	chunks := applyFilters(cf.Chunks, *ctgStr, *cnoVal)
+	chunks := applyFilters(cf.Chunks, c.String("ctg"), c.Int("cno"))
+	listChunks(cf, chunks)
+	return nil
+}
 
-	if *doExtract {
-		if err := extractChunks(f, cf, path, chunks, *outDir, *verbose, *rawMode); err != nil {
-			fatalf("%v", err)
-		}
-	} else {
-		listChunks(cf, chunks)
+func chunkyExtractAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
+	path := c.Args().First()
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	cf, err := ParseChunkyFile(f)
+	if err != nil {
+		return err
+	}
+
+	chunks := applyFilters(cf.Chunks, c.String("ctg"), c.Int("cno"))
+	return extractChunks(f, cf, path, chunks, c.String("outdir"), c.Bool("verbose"), c.Bool("raw"))
 }
 
 // applyFilters narrows the chunk list by CTG and/or CNO.
@@ -270,98 +278,102 @@ func parseCTGString(s string) uint32 {
 	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
-func mbmpMain(args []string) {
-	fs := flag.NewFlagSet("mbmp", flag.ExitOnError)
-	outFile := fs.String("o", "", "Output PNG file (default: stdout)")
-	view := fs.Bool("view", false, "View the image in terminal")
-	info := fs.Bool("info", false, "Get information about the MBMP")
-	paletteFile := fs.String("palette", "", "Palette file (1024 bytes: 256 × RGBA); if omitted, grayscale")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go mbmp [-view] [-info] [-palette palette.bin] [-o output.png] <input.mbmp>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Decode an MBMP chunk and write it as a PNG image.")
-		fmt.Fprintln(os.Stderr, "Without -palette, indices are rendered as grayscale (R=G=B=index).")
-		fmt.Fprintln(os.Stderr, "")
-		fs.PrintDefaults()
+// mbmpCommand returns the `mbmp` command.
+func mbmpCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "mbmp",
+		Usage:     "Decode an MBMP chunk and write it as a PNG image",
+		ArgsUsage: "<input.mbmp> [...]",
+		Description: "Decode an MBMP chunk and write it as a PNG image.\n" +
+			"Without --palette, indices are rendered as grayscale (R=G=B=index).",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "o", Usage: "Output PNG file (default: stdout)"},
+			&cli.BoolFlag{Name: "view", Usage: "View the image in terminal"},
+			&cli.BoolFlag{Name: "info", Usage: "Get information about the MBMP"},
+			&cli.StringFlag{Name: "palette", Usage: "Palette file (1024 bytes: 256 × RGBA); if omitted, grayscale"},
+		},
+		Action: mbmpAction,
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
+}
+
+func mbmpAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
 
 	var pal []color.RGBA
-	if *paletteFile != "" {
-		pal = loadPalette(*paletteFile)
+	if p := c.String("palette"); p != "" {
+		pal = loadPalette(p)
 	}
 
-	for i, path := range fs.Args() {
+	outFile := c.String("o")
+	view := c.Bool("view")
+	info := c.Bool("info")
+
+	for i, path := range c.Args().Slice() {
 		if i > 0 {
 			fmt.Println()
 		}
-		if fs.NArg() > 1 {
+		if c.NArg() > 1 {
 			fmt.Println(path)
 		}
 
 		f, err := os.Open(path)
 		if err != nil {
-			fatalf("open %s: %v", path, err)
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 
 		img, err := ReadMBMP(f)
 		f.Close()
 		if err != nil {
-			fatalf("%v", err)
+			return err
 		}
 
 		bounds := img.Bounds()
 
-		if *info {
+		if info {
 			fmt.Printf("Width: %d\nHeight: %d\n", bounds.Dx(), bounds.Dy())
 			continue
 		}
 
-		// Convert to NRGBA. With a palette, map indices to their actual colors.
-		// Without a palette, use grayscale (R=G=B=index) with the decoded alpha.
 		out := image.NewNRGBA(bounds)
 		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				c := img.At(x, y).(MBMPColor)
+				mc := img.At(x, y).(MBMPColor)
 				if pal != nil {
-					pc := pal[c.Index]
-					// Use src alpha so transparency from the MBMP mask is preserved.
-					out.SetNRGBA(x, y, color.NRGBA{R: pc.R, G: pc.G, B: pc.B, A: c.A})
+					pc := pal[mc.Index]
+					out.SetNRGBA(x, y, color.NRGBA{R: pc.R, G: pc.G, B: pc.B, A: mc.A})
 				} else {
-					out.SetNRGBA(x, y, color.NRGBA{R: c.Index, G: c.Index, B: c.Index, A: c.A})
+					out.SetNRGBA(x, y, color.NRGBA{R: mc.Index, G: mc.Index, B: mc.Index, A: mc.A})
 				}
 			}
 		}
 
-		if *view {
+		if view {
 			if err, _ := imgterm.Display(out); err != nil {
-				panic(err)
+				return fmt.Errorf("display: %w", err)
 			}
 			continue
 		}
 
 		var w io.Writer
-		if *outFile == "" {
+		if outFile == "" {
 			w = os.Stdout
 		} else {
-			pf, err := os.Create(*outFile)
+			pf, err := os.Create(outFile)
 			if err != nil {
-				fatalf("create %s: %v", *outFile, err)
+				return fmt.Errorf("create %s: %w", outFile, err)
 			}
 			defer pf.Close()
 			w = pf
 		}
 
 		if err := png.Encode(w, out); err != nil {
-			fatalf("encode PNG: %v", err)
+			return fmt.Errorf("encode PNG: %w", err)
 		}
 	}
+	return nil
 }
 
 // loadPalette reads a binary palette file (256 × 4 bytes, RGBA) and returns
@@ -369,10 +381,12 @@ func mbmpMain(args []string) {
 func loadPalette(path string) []color.RGBA {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fatalf("read palette %s: %v", path, err)
+		fmt.Fprintf(os.Stderr, "error: read palette %s: %v\n", path, err)
+		os.Exit(1)
 	}
 	if len(data) != 1024 {
-		fatalf("palette %s: expected 1024 bytes (256 × RGBA), got %d", path, len(data))
+		fmt.Fprintf(os.Stderr, "error: palette %s: expected 1024 bytes (256 × RGBA), got %d\n", path, len(data))
+		os.Exit(1)
 	}
 	pal := make([]color.RGBA, 256)
 	for i := range pal {
@@ -381,64 +395,65 @@ func loadPalette(path string) []color.RGBA {
 	return pal
 }
 
-func bkgdMain(args []string) {
-	fs := flag.NewFlagSet("bkgd", flag.ExitOnError)
-	cnoVal := fs.Int("cno", -1, "BKGD chunk number (-1 = first found)")
-	zbuf := fs.Bool("z", false, "Render z-buffer as grayscale (white=close, black=far) instead of color")
-	zmul := fs.Float64("zmul", 1.0, "Z-buffer contrast multiplier (>1 boosts contrast, only used with -z)")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go bkgd [-cno N] [-z] [-zmul N] <file.chk>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Render each camera angle of a BKGD chunk to the terminal.")
-		fmt.Fprintln(os.Stderr, "The palette is loaded automatically from a GLCR chunk in the file.")
-		fmt.Fprintln(os.Stderr, "If no GLCR is found, indices are rendered as grayscale.")
-		fmt.Fprintln(os.Stderr, "")
-		fs.PrintDefaults()
+// bkgdCommand returns the `bkgd` command.
+func bkgdCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "bkgd",
+		Usage:     "Render background camera angles from a chunky file to the terminal",
+		ArgsUsage: "<file.chk>",
+		Description: "Render each camera angle of a BKGD chunk to the terminal.\n" +
+			"The palette is loaded automatically from a GLCR chunk in the file.\n" +
+			"If no GLCR is found, indices are rendered as grayscale.",
+		Flags: []cli.Flag{
+			&cli.IntFlag{Name: "cno", Value: -1, Usage: "BKGD chunk number (-1 = first found)"},
+			&cli.BoolFlag{Name: "z", Usage: "Render z-buffer as grayscale (white=close, black=far) instead of color"},
+			&cli.Float64Flag{Name: "zmul", Value: 1.0, Usage: "Z-buffer contrast multiplier (>1 boosts contrast, only used with -z)"},
+		},
+		Action: bkgdAction,
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
+}
+
+func bkgdAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
 
-	f, err := os.Open(fs.Arg(0))
+	f, err := os.Open(c.Args().First())
 	if err != nil {
-		fatalf("open %s: %v", fs.Arg(0), err)
+		return fmt.Errorf("open %s: %w", c.Args().First(), err)
 	}
 	defer f.Close()
 
 	cf, err := ParseChunkyFile(f)
 	if err != nil {
-		fatalf("%v", err)
+		return err
 	}
 
-	// Find the BKGD chunk.
+	cnoVal := c.Int("cno")
 	var bkgdChunk Chunk
 	var found bool
-	if *cnoVal >= 0 {
-		bkgdChunk, found = cf.FindChunk(ctgBKGD, uint32(*cnoVal))
+	if cnoVal >= 0 {
+		bkgdChunk, found = cf.FindChunk(ctgBKGD, uint32(cnoVal))
 		if !found {
-			fatalf("BKGD chunk with CNO 0x%08X not found", uint32(*cnoVal))
+			return fmt.Errorf("BKGD chunk with CNO 0x%08X not found", uint32(cnoVal))
 		}
 	} else {
-		for _, c := range cf.Chunks {
-			if c.CTG == ctgBKGD {
-				bkgdChunk = c
+		for _, ch := range cf.Chunks {
+			if ch.CTG == ctgBKGD {
+				bkgdChunk = ch
 				found = true
 				break
 			}
 		}
 		if !found {
-			fatalf("no BKGD chunk found in %s", fs.Arg(0))
+			return fmt.Errorf("no BKGD chunk found in %s", c.Args().First())
 		}
 	}
 
-	// Auto-load palette from GLCR chunk; fall back to grayscale.
 	base, glcrFound, err := FindGLCR(cf, f)
 	if err != nil {
-		fatalf("loading GLCR palette: %v", err)
+		return fmt.Errorf("loading GLCR palette: %w", err)
 	}
 	if !glcrFound {
 		fmt.Fprintln(os.Stderr, "notice: no GLCR palette chunk found; rendering in grayscale")
@@ -447,18 +462,21 @@ func bkgdMain(args []string) {
 
 	scene, err := LoadBackgroundScene(f, cf, bkgdChunk.CTG, bkgdChunk.CNO, base)
 	if err != nil {
-		fatalf("%v", err)
+		return err
 	}
 
 	fmt.Printf("BKGD 0x%08X: %d camera angle(s), palette base index %d\n\n",
 		bkgdChunk.CNO, len(scene.Angles), scene.IndexBase)
+
+	zbuf := c.Bool("z")
+	zmul := c.Float64("zmul")
 
 	for _, angle := range scene.Angles {
 		fmt.Printf("Camera %d\n", angle.Index)
 
 		var out *image.NRGBA
 
-		if *zbuf {
+		if zbuf {
 			if angle.ZBuf == nil {
 				fmt.Fprintf(os.Stderr, "camera %d: no ZBMP chunk found, skipping\n", angle.Index)
 				continue
@@ -470,8 +488,7 @@ func bkgdMain(args []string) {
 				for x := bounds.Min.X; x < bounds.Max.X; x++ {
 					i := (y-bounds.Min.Y)*dx + (x - bounds.Min.X)
 					z := angle.ZBuf.Pix[i]
-					// 0x0000 = closest (white), 0xFFFF = farthest (black)
-					gf := (1.0 - float64(z)/0xFFFF) * 255 * *zmul
+					gf := (1.0 - float64(z)/0xFFFF) * 255 * zmul
 					if gf > 255 {
 						gf = 255
 					}
@@ -484,137 +501,139 @@ func bkgdMain(args []string) {
 			out = image.NewNRGBA(bounds)
 			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 				for x := bounds.Min.X; x < bounds.Max.X; x++ {
-					c := angle.Img.At(x, y).(MBMPColor)
-					pc := scene.Palette.Colors[c.Index]
+					mc := angle.Img.At(x, y).(MBMPColor)
+					pc := scene.Palette.Colors[mc.Index]
 					r, g, b, _ := pc.RGBA()
-					out.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: c.A})
+					out.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: mc.A})
 				}
 			}
 		}
 
 		if err, _ := imgterm.Display(out); err != nil {
-			fatalf("display camera %d: %v", angle.Index, err)
+			return fmt.Errorf("display camera %d: %w", angle.Index, err)
 		}
 		fmt.Println()
 	}
+	return nil
 }
 
-func genpaletteMain(args []string) {
-	fs := flag.NewFlagSet("genpalette", flag.ExitOnError)
-	outFile := fs.String("o", "", "Output file (default: stdout)")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go genpalette [-o output] <src-image> <comparison-image>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Generate a palette from two images and write it in binary form.")
-		fmt.Fprintln(os.Stderr, "Each color is written as 4 bytes: R G B A.")
-		fmt.Fprintln(os.Stderr, "")
-		fs.PrintDefaults()
+// genpaletteCommand returns the `genpalette` command.
+func genpaletteCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "genpalette",
+		Usage:     "Generate a palette from two images",
+		ArgsUsage: "<src-image> <comparison-image>",
+		Description: "Generate a palette from two images and write it in binary form.\n" +
+			"Each color is written as 4 bytes: R G B A.",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "o", Usage: "Output file (default: stdout)"},
+		},
+		Action: genpaletteAction,
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
-	if fs.NArg() < 2 {
-		fs.Usage()
-		os.Exit(1)
+}
+
+func genpaletteAction(c *cli.Context) error {
+	if c.NArg() < 2 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
 
-	src := loadImage(fs.Arg(0))
-	cmp := loadImage(fs.Arg(1))
+	src := loadImage(c.Args().Get(0))
+	cmp := loadImage(c.Args().Get(1))
 
 	palette, err := GenPalette(src, cmp)
 	if err != nil {
-		fatalf("genpalette: %v", err)
+		return fmt.Errorf("genpalette: %w", err)
 	}
 
 	var w io.Writer
-	if *outFile == "" {
+	if outFile := c.String("o"); outFile == "" {
 		w = os.Stdout
 	} else {
-		pf, err := os.Create(*outFile)
+		pf, err := os.Create(outFile)
 		if err != nil {
-			fatalf("create %s: %v", *outFile, err)
+			return fmt.Errorf("create %s: %w", outFile, err)
 		}
 		defer pf.Close()
 		w = pf
 	}
 
-	for _, c := range palette.Colors {
-		r, g, b, a := c.RGBA()
+	for _, col := range palette.Colors {
+		r, g, b, a := col.RGBA()
 		buf := [4]byte{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
 		if err := binary.Write(w, binary.BigEndian, buf); err != nil {
-			fatalf("write palette: %v", err)
+			return fmt.Errorf("write palette: %w", err)
 		}
 	}
+	return nil
 }
 
 // loadImage opens an image file (PNG, etc.) and decodes it, exiting on error.
 func loadImage(path string) image.Image {
 	f, err := os.Open(path)
 	if err != nil {
-		fatalf("open %s: %v", path, err)
+		fmt.Fprintf(os.Stderr, "error: open %s: %v\n", path, err)
+		os.Exit(1)
 	}
 	defer f.Close()
 	img, _, err := image.Decode(f)
 	if err != nil {
-		fatalf("decode %s: %v", path, err)
+		fmt.Fprintf(os.Stderr, "error: decode %s: %v\n", path, err)
+		os.Exit(1)
 	}
 	return img
 }
 
-func dagMain(args []string) {
-	fs := flag.NewFlagSet("dag", flag.ExitOnError)
-	outFile := fs.String("o", "", "Output DOT file (default: stdout)")
-	ctgStr := fs.String("ctg", "", `Filter by chunk type (4 chars, e.g. "MVIE")`)
-	cnoVal := fs.Int("cno", -1, "Filter by chunk number (-1 = all chunks)")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: 3dmm-go dag [-o output.dot] [-ctg TYPE] [-cno NUM] <file.chk>")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Write a Graphviz DOT digraph of chunk parent→child relationships.")
-		fmt.Fprintln(os.Stderr, "Render with: dot -Tpng -o graph.png output.dot")
-		fmt.Fprintln(os.Stderr, "")
-		fs.PrintDefaults()
+// dagCommand returns the `dag` command.
+func dagCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "dag",
+		Usage:     "Write a Graphviz DOT file of the chunk parent→child graph",
+		ArgsUsage: "<file.chk>",
+		Description: "Write a Graphviz DOT digraph of chunk parent→child relationships.\n" +
+			"Render with: dot -Tpng -o graph.png output.dot",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "o", Usage: "Output DOT file (default: stdout)"},
+			&cli.StringFlag{Name: "ctg", Usage: `Filter by chunk type (4 chars, e.g. "MVIE")`},
+			&cli.IntFlag{Name: "cno", Value: -1, Usage: "Filter by chunk number (-1 = all chunks)"},
+		},
+		Action: dagAction,
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
-	}
-	if fs.NArg() < 1 {
-		fs.Usage()
-		os.Exit(1)
+}
+
+func dagAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
 	}
 
-	f, err := os.Open(fs.Arg(0))
+	f, err := os.Open(c.Args().First())
 	if err != nil {
-		fatalf("open %s: %v", fs.Arg(0), err)
+		return fmt.Errorf("open %s: %w", c.Args().First(), err)
 	}
 	defer f.Close()
 
 	cf, err := ParseChunkyFile(f)
 	if err != nil {
-		fatalf("%v", err)
+		return err
 	}
 
-	// When a filter is applied, restrict to those chunks but preserve their
-	// KID edges so referenced children still appear in the graph.
-	if *ctgStr != "" || *cnoVal >= 0 {
-		cf.Chunks = applyFilters(cf.Chunks, *ctgStr, *cnoVal)
+	if ctg := c.String("ctg"); ctg != "" || c.Int("cno") >= 0 {
+		cf.Chunks = applyFilters(cf.Chunks, ctg, c.Int("cno"))
 	}
 
 	var w io.Writer
-	if *outFile == "" {
+	if outFile := c.String("o"); outFile == "" {
 		w = os.Stdout
 	} else {
-		df, err := os.Create(*outFile)
+		df, err := os.Create(outFile)
 		if err != nil {
-			fatalf("create %s: %v", *outFile, err)
+			return fmt.Errorf("create %s: %w", outFile, err)
 		}
 		defer df.Close()
 		w = df
 	}
 
 	ChunkDAG(cf, w)
-}
-
-func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
-	os.Exit(1)
+	return nil
 }
