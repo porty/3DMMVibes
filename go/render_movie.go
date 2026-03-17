@@ -17,6 +17,11 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+const (
+	defaultWidth  = 544
+	defaultHeight = 306
+)
+
 // actorColors is a fixed palette of 8 distinct semi-transparent NRGBA colors
 // used to mark actor positions. Index by arid % 8.
 var actorColors = [8]color.NRGBA{
@@ -92,10 +97,10 @@ func mbmpToNRGBA(img *MBMPImage, pal Palette) *image.NRGBA {
 // blankFrame returns a solid mid-gray 544x306 NRGBA image used as a fallback
 // when no background is available.
 func blankFrame() *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, 640, 480))
+	img := image.NewNRGBA(image.Rect(0, 0, defaultWidth, defaultHeight))
 	gray := color.NRGBA{R: 128, G: 128, B: 128, A: 255}
-	for y := range 480 {
-		for x := range 640 {
+	for y := range defaultHeight {
+		for x := range defaultWidth {
 			img.SetNRGBA(x, y, gray)
 		}
 	}
@@ -229,13 +234,14 @@ func renderCommand() *cli.Command {
 				Name:      "rgb24",
 				Usage:     "Render frames as raw 24-bit RGB (pipe to ffmpeg)",
 				ArgsUsage: "<movie.3mm>",
-				Description: "Outputs raw RGB24 video data with no header. Each pixel is 3 bytes (R, G, B),\n" +
-					"written row by row, left to right, top to bottom. Frame dimensions match the\n" +
-					"background image (typically 544x306). 3D Movie Maker runs at 12 frames per second.\n\n" +
-					"Pass these values to ffmpeg via -video_size, -framerate, and -pixel_format rgb24.\n\n" +
-					"Example:\n" +
-					"  3dmm render rgb24 --bkgddir ./content movie.3mm \\\n" +
-					"    | ffmpeg -f rawvideo -video_size 544x306 -pixel_format rgb24 -framerate 12 -i - output.mp4",
+				Description: fmt.Sprintf("Outputs raw RGB24 video data with no header. Each pixel is 3 bytes (R, G, B),\n"+
+					"written row by row, left to right, top to bottom. Frame dimensions match the\n"+
+					"background image (typically %[1]dx%[2]d). 3D Movie Maker runs at 12 frames per second.\n\n"+
+					"Pass these values to ffmpeg via -video_size, -framerate, and -pixel_format rgb24.\n\n"+
+					"Example:\n"+
+					"  3dmm render rgb24 --bkgddir ./content movie.3mm \\\n"+
+					"    | ffmpeg -f rawvideo -video_size %[1]dx%[2]d -pixel_format rgb24 -framerate 12 -i - output.mp4",
+					defaultWidth, defaultHeight),
 				Flags: append(commonFlags,
 					&cli.StringFlag{Name: "output", Value: "-", Usage: `Output file path; "-" writes to stdout`},
 				),
@@ -245,13 +251,14 @@ func renderCommand() *cli.Command {
 				Name:      "ffmpeg",
 				Usage:     "Render frames and pipe directly to ffmpeg",
 				ArgsUsage: "<movie.3mm> <output>",
-				Description: "Renders raw RGB24 frames and pipes them to ffmpeg as a subprocess.\n" +
-					"--video-size must match the background resolution of the movie (typically 544x306).\n" +
-					"3D Movie Maker movies run at 12 frames per second.\n\n" +
-					"Example:\n" +
-					"  3dmm render ffmpeg --bkgddir ./content --video-size 544x306 movie.3mm output.mp4",
+				Description: fmt.Sprintf("Renders raw RGB24 frames and pipes them to ffmpeg as a subprocess.\n"+
+					"--video-size must match the background resolution of the movie (typically %[1]dx%[2]d).\n"+
+					"3D Movie Maker movies run at 12 frames per second.\n\n"+
+					"Example:\n"+
+					"  3dmm render ffmpeg --bkgddir ./content --video-size %[1]dx%[2]d movie.3mm output.mp4",
+					defaultWidth, defaultHeight),
 				Flags: append(commonFlags,
-					&cli.StringFlag{Name: "video-size", Value: "544x306", Usage: "Frame dimensions WxH (must match background resolution)"},
+					&cli.StringFlag{Name: "video-size", Value: fmt.Sprintf("%dx%d", defaultWidth, defaultHeight), Usage: "Frame dimensions WxH (must match background resolution)"},
 					&cli.IntFlag{Name: "framerate", Value: 12, Usage: "Output framerate passed to ffmpeg"},
 					&cli.StringFlag{Name: "ffmpeg-bin", Value: "ffmpeg", Usage: "Path to ffmpeg binary"},
 				),
@@ -515,7 +522,7 @@ func renderScene(
 		} else {
 			frame = blankFrame()
 			// cam = defaultCamParams(640, 480)
-			cam = defaultCamParams(544, 306)
+			cam = defaultCamParams(defaultWidth, defaultHeight)
 			if currentBkgd != nil {
 				fmt.Fprintf(os.Stderr, "warning: scene %d frame %d: camera %d out of range (%d angles)\n",
 					sceneIdx, nfrm, currentCam, len(currentBkgd.scene.Angles))
@@ -681,7 +688,7 @@ func renderSceneRGB24(
 			}
 		} else {
 			frame = blankFrame()
-			cam = defaultCamParams(640, 480)
+			cam = defaultCamParams(defaultWidth, defaultHeight)
 			if currentBkgd != nil {
 				fmt.Fprintf(os.Stderr, "warning: scene %d frame %d: camera %d out of range (%d angles)\n",
 					sceneIdx, nfrm, currentCam, len(currentBkgd.scene.Angles))
