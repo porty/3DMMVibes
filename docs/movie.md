@@ -132,7 +132,7 @@ for tracking where content originally came from.
 
 One chunk per actor placed in a scene. Contains an `ACTF` header.
 
-#### On-disk header — `ACTF`
+#### On-disk header — `ACTF` (44 bytes)
 
 | Offset | Type    | Field          | Description                                     |
 |--------|---------|----------------|-------------------------------------------------|
@@ -143,6 +143,8 @@ One chunk per actor placed in a scene. Contains an `ACTF` header.
 | 20     | `long`  | `nfrmFirst`    | First frame this actor is alive                 |
 | 24     | `long`  | `nfrmLast`     | Last frame this actor is alive                  |
 | 28     | `TAG`   | `tagTmpl`      | Reference to the actor's 3D template (TMPL)     |
+
+`TAG` is 16 bytes (see Key Data Types), so ACTF total = 44 bytes.
 
 BOM: `0x5FFC0000 | kbomTag`
 
@@ -195,19 +197,36 @@ The default Z position for new actors is `kzrDefault = BR_SCALAR(-25.0)`.
 Child of ACTR. Serialised as a Kauai `GG` (General Group) where each entry is a
 variable-length `AEV` (Actor Event) record.
 
-Each entry records a frame-numbered event together with event-type-specific data.
-Event types (`AET`) include:
+#### Fixed part — `AEV` (20 bytes)
 
-| AET constant    | Meaning                                   |
-|-----------------|-------------------------------------------|
-| `aetActn`       | Action / animation change                 |
-| `aetCost`       | Costume / material change                 |
-| `aetAdd`        | Actor enters scene at this frame          |
-| `aetFreeze`     | Actor freezes in place                    |
-| `aetMove`       | Position step along route                 |
-| `aetRotH`       | Heading rotation                          |
-| `aetSnd`        | Sound event (references an MSND chunk)    |
-| `aetStep`       | Cel step event                            |
+| Offset | Type   | Field            | Description                                        |
+|--------|--------|------------------|----------------------------------------------------|
+| 0      | `long` | `aet`            | Event type (see AET enum below)                    |
+| 4      | `long` | `nfrm`           | Absolute frame number at which this event fires    |
+| 8      | `int`  | `rtel.irpt`      | Index of the preceding route point                 |
+| 12     | `BRS`  | `rtel.dwrOffset` | Linear distance beyond route point `irpt`          |
+| 16     | `long` | `rtel.dnfrm`     | Frame delta at this route location (timing info)   |
+
+The `rtel` fields together form an `RTEL` (Route Location): a point in both space
+(between route waypoints) and time.
+
+#### Variable part by event type
+
+| AET constant | Value | Variable data                            | Meaning                            |
+|--------------|-------|------------------------------------------|------------------------------------|
+| `aetAdd`     | 0     | `AEVADD`: `dxr, dyr, dzr` (3×BRS), `xa, ya, za` (3×BRA) | Actor enters stage; sets subroute translation and initial orientation |
+| `aetActn`    | 1     | `AEVACTN`: `anid` (long), `celn` (long)  | Action / animation change          |
+| `aetCost`    | 2     | `AEVCOST`: `ibset`, `cmid`, `fCmtl`, `TAG tag` | Costume / material change     |
+| `aetRotF`    | 3     | `BMAT34` (48 bytes)                      | Forward (path-following) rotation  |
+| `aetPull`    | 4     | `AEVPULL`: `rScaleX, rScaleY, rScaleZ` (3×BRS) | Squash/stretch transform    |
+| `aetSize`    | 5     | `BRS`                                    | Uniform scale                      |
+| `aetSnd`     | 6     | `AEVSND`                                 | Sound event                        |
+| `aetMove`    | 7     | `XYZ`: `dxr, dyr, dzr` (3×BRS)          | Accumulate subroute translation    |
+| `aetFreeze`  | 8     | `long`                                   | Freeze / unfreeze actor in place   |
+| `aetTweak`   | 9     | `XYZ`: `dxr, dyr, dzr` (3×BRS)          | Path waypoint tweak                |
+| `aetStep`    | 10    | `BRS`                                    | Force cel step size                |
+| `aetRem`     | 11    | *(none)*                                 | Remove actor from stage            |
+| `aetRotH`    | 12    | `BMAT34` (48 bytes)                      | Single-frame heading rotation      |
 
 ---
 
@@ -341,6 +360,56 @@ directly in `.3MM` files, but are referenced by TAG values stored in ACTR and SC
 
 All tag constants below are defined in `inc/soc.h`.
 
+### CAM — Camera
+
+**Tag:** `'CAM '` (`kctgCam`)
+**Source:** `src/engine/bkgd.cpp`, `inc/bkgd.h`
+**Child of:** BKGD at chid = camera index (0, 1, 2, …)
+
+#### On-disk layout — `CAM` (76 bytes fixed, followed by `APOS[]`)
+
+| Offset | Type     | Field         | Description                                              |
+|--------|----------|---------------|----------------------------------------------------------|
+| 0      | `short`  | `bo`          | Byte-order marker                                        |
+| 2      | `short`  | `osk`         | OS kind                                                  |
+| 4      | `BRS`    | `zrHither`    | Near clip plane distance                                 |
+| 8      | `BRS`    | `zrYon`       | Far clip plane distance                                  |
+| 12     | `BRA`    | `aFov`        | Horizontal field of view (uint16: 0–65535 maps to 0–2π; radians = value × π/32768) |
+| 14     | `short`  | `swPad`       | Padding                                                  |
+| 16     | `APOS`   | `apos`        | Default actor placement point (3 × BRS: xrPlace, yrPlace, zrPlace) |
+| 28     | `BMAT34` | `bmat34Cam`   | Camera model matrix — **camera-to-world** (48 bytes)     |
+
+After the fixed 76 bytes, zero or more additional `APOS` records (each 12 bytes) provide
+per-view actor placement hints.
+
+#### `bmat34Cam` convention
+
+`bmat34Cam` is the camera's **model matrix** (camera-to-world), stored in BRender
+row-vector order as four rows of three `BRS` scalars:
+
+- `m[0]` — camera local X axis (right) expressed in world space
+- `m[1]` — camera local Y axis (up) expressed in world space
+- `m[2]` — camera local Z axis (backward) expressed in world space; the camera looks down **−Z** in camera space
+- `m[3]` — camera position in world space
+
+BRender inverts this matrix internally before rendering. To project a world-space point
+to camera space without BRender, invert the matrix: for the orthonormal rotation block,
+the inverse is its transpose. The full world-to-camera transform is:
+
+```
+d       = world_pos − m[3]
+cam.x   = dot(d, m[0])
+cam.y   = dot(d, m[1])
+cam.z   = dot(d, m[2])   // negative for points in front of the camera
+```
+
+Points with `cam.z >= 0` are behind the camera and should be clipped.
+
+BOM: `kbomCam = 0x5F4FC000` (covers the fixed header through `apos`; `bmat34Cam` and
+the trailing `APOS[]` are byte-swapped separately as arrays of longs).
+
+---
+
 | Tag     | Constant     | Description                              |
 |---------|--------------|------------------------------------------|
 | `TMPL`  | `kctgTmpl`   | 3D character/prop template               |
@@ -376,7 +445,7 @@ All tag constants below are defined in `inc/soc.h`.
 | `CTG`  | Chunk tag — 4 ASCII characters packed into a `ulong`               |
 | `CNO`  | Chunk number — 32-bit unique identifier within a file              |
 | `CHID` | Child ID — 32-bit identifier used to distinguish children with the same tag |
-| `TAG`  | `{ CTG ctg; CNO cno; }` — reference to a chunk (possibly in another file) |
+| `TAG`  | `{ long sid; PCRF pcrf; CTG ctg; CNO cno; }` — 16 bytes on disk. `sid` is the source ID; `pcrf` is a runtime pointer stored as 0 on disk; `ctg`/`cno` identify the target chunk. `kbomTag = 0xFF000000` (four 32-bit fields). |
 | `GL`   | General List — typed dynamic array (Kauai collection)              |
 | `GG`   | General Group — variable-length-entry dynamic array                |
 | `GST`  | General String Table — associative table of string + extra data    |

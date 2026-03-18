@@ -37,19 +37,31 @@ var actorColors = [8]color.NRGBA{
 
 // CamParams holds the camera parameters needed for 3D→2D projection.
 type CamParams struct {
-	M      [4][3]float64 // BMAT34 rows (world→view transform, row-vector convention)
-	FOVRad float64       // horizontal field of view in radians
-	W, H   int           // output image pixel dimensions
+	M      [4][3]float64 // BMAT34 rows — camera-to-world model matrix (row-vector convention).
+	// Row 3 is the camera position in world space; rows 0–2 are the camera's
+	// local X/Y/Z axes expressed in world space.  To project a world point,
+	// invert this matrix: subtract M[3] then dot-product with each row.
+	FOVRad float64 // horizontal field of view in radians
+	W, H   int     // output image pixel dimensions
 }
 
 // projectWorldPoint projects a world-space point to screen pixel coordinates
 // using BRender's row-vector, negative-Z-forward convention.
 // Returns (sx, sy, inView). inView is false when the point is behind the camera.
+//
+// cam.M is the camera's model matrix (camera-to-world). To go world-to-camera
+// we invert it: for an orthonormal matrix this is transpose(rotation) applied
+// to (world − translation). In row-vector terms:
+//
+//	v_cam = (w − M[3]) · M_rot  where M_rot is the 3×3 upper block of M.
 func projectWorldPoint(cam CamParams, wx, wy, wz float64) (sx, sy int, inView bool) {
 	M := cam.M
-	vx := wx*M[0][0] + wy*M[1][0] + wz*M[2][0] + M[3][0]
-	vy := wx*M[0][1] + wy*M[1][1] + wz*M[2][1] + M[3][1]
-	vz := wx*M[0][2] + wy*M[1][2] + wz*M[2][2] + M[3][2]
+	dx := wx - M[3][0]
+	dy := wy - M[3][1]
+	dz := wz - M[3][2]
+	vx := dx*M[0][0] + dy*M[0][1] + dz*M[0][2]
+	vy := dx*M[1][0] + dy*M[1][1] + dz*M[1][2]
+	vz := dx*M[2][0] + dy*M[2][1] + dz*M[2][2]
 	if vz >= 0 {
 		return 0, 0, false // behind camera
 	}
