@@ -8,6 +8,7 @@ require (
 	github.com/mattn/go-sixel v0.0.8
 	github.com/mattn/longcat v0.0.12
 	github.com/urfave/cli/v2 v2.27.7
+	golang.org/x/image v0.15.0
 	golang.org/x/term v0.40.0
 )
 
@@ -23,6 +24,5 @@ require (
 	github.com/tomnomnom/xtermcolor v0.0.0-20160428124646-b78803f00a7e // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	github.com/zyxar/image2ascii v0.0.0-20231201150218-0baccbec7582 // indirect
-	golang.org/x/image v0.15.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )

@@ -252,6 +252,69 @@ func interpolateRoute(path []RoutePoint, irpt int32, dwrOffset float64) (x, y, z
 		p0.Z + (p1.Z-p0.Z)*t
 }
 
+// AEVSND is the variable-data payload for an aetSnd actor event (44 bytes).
+//
+// Layout (all little-endian):
+//
+//	[0:4]   FLoop    — tribool (0=no, 1=yes, 2=maybe)
+//	[4:8]   FQueue   — tribool; if true, multiple events coexist in one frame
+//	[8:12]  Vlm      — volume
+//	[12:16] Celn     — cel number for motion-match; -1 (ivNil) if not motion-match
+//	[16:20] Sty      — sound type: 2=SFX, 3=Speech, 4=MIDI
+//	[20:24] FNoSound — tribool mute flag
+//	[24:28] CHID     — child chunk ID for user sounds
+//	[28:32] TagSID   — tag.sid
+//	[32:36] TagPCRF  — tag.pcrf (runtime pointer; skip)
+//	[36:40] TagCTG   — tag.ctg
+//	[40:44] TagCNO   — tag.cno
+type AEVSND struct {
+	FLoop    int32
+	FQueue   int32
+	Vlm      int32
+	Celn     int32  // -1 means not a motion-match sound
+	Sty      int32
+	FNoSound int32
+	CHID     uint32
+	TagSID   int32
+	TagPCRF  uint32 // runtime pointer — ignored
+	TagCTG   uint32
+	TagCNO   uint32
+}
+
+// ParseAEVSND parses a 44-byte aetSnd VarData payload.
+func ParseAEVSND(data []byte) (*AEVSND, error) {
+	if len(data) < 44 {
+		return nil, fmt.Errorf("AEVSND: data too short (%d bytes, need 44)", len(data))
+	}
+	return &AEVSND{
+		FLoop:    int32(binary.LittleEndian.Uint32(data[0:4])),
+		FQueue:   int32(binary.LittleEndian.Uint32(data[4:8])),
+		Vlm:      int32(binary.LittleEndian.Uint32(data[8:12])),
+		Celn:     int32(binary.LittleEndian.Uint32(data[12:16])),
+		Sty:      int32(binary.LittleEndian.Uint32(data[16:20])),
+		FNoSound: int32(binary.LittleEndian.Uint32(data[20:24])),
+		CHID:     binary.LittleEndian.Uint32(data[24:28]),
+		TagSID:   int32(binary.LittleEndian.Uint32(data[28:32])),
+		TagPCRF:  binary.LittleEndian.Uint32(data[32:36]),
+		TagCTG:   binary.LittleEndian.Uint32(data[36:40]),
+		TagCNO:   binary.LittleEndian.Uint32(data[40:44]),
+	}, nil
+}
+
+// StyLabel returns a short human-readable label for a sound type value.
+func StyLabel(sty int32) string {
+	switch sty {
+	case 2:
+		return "SFX"
+	case 3:
+		return "Speech"
+	case 4:
+		return "MIDI"
+	default:
+		return "Sound"
+	}
+}
+
 // LoadActor reads the ACTF, PATH and GGAE sub-chunks for one ACTR chunk.
 type Actor struct {
 	Def    *ActorDef

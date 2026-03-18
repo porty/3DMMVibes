@@ -220,7 +220,7 @@ The `rtel` fields together form an `RTEL` (Route Location): a point in both spac
 | `aetRotF`    | 3     | `BMAT34` (48 bytes)                      | Forward (path-following) rotation  |
 | `aetPull`    | 4     | `AEVPULL`: `rScaleX, rScaleY, rScaleZ` (3×BRS) | Squash/stretch transform    |
 | `aetSize`    | 5     | `BRS`                                    | Uniform scale                      |
-| `aetSnd`     | 6     | `AEVSND`                                 | Sound event                        |
+| `aetSnd`     | 6     | `AEVSND`                                 | Sound event (see [sounds.md](sounds.md)) |
 | `aetMove`    | 7     | `XYZ`: `dxr, dyr, dzr` (3×BRS)          | Accumulate subroute translation    |
 | `aetFreeze`  | 8     | `long`                                   | Freeze / unfreeze actor in place   |
 | `aetTweak`   | 9     | `XYZ`: `dxr, dyr, dzr` (3×BRS)          | Path waypoint tweak                |
@@ -236,7 +236,7 @@ The `rtel` fields together form an `RTEL` (Route Location): a point in both spac
 **Source:** `src/engine/scene.cpp`
 **Child of:** SCEN at chid=0
 
-A Kauai `GG` storing scene-level events keyed by frame number (camera cuts, background switches, lighting changes, etc.).
+A Kauai `GG` storing scene-level events keyed by frame number (camera cuts, background switches, sound cues, etc.). Scene sound events (`sevtPlaySnd`) live here — see [sounds.md](sounds.md) for the `SSE` payload layout.
 
 ---
 
@@ -417,7 +417,7 @@ the trailing `APOS[]` are byte-swapped separately as arrays of longs).
 | `ACTN`  | `kctgActn`   | Named action / animation clip            |
 | `MTRL`  | `kctgMtrl`   | Material (surface shader)                |
 | `CMTL`  | `kctgCmtl`   | Custom material                          |
-| `MSND`  | `kctgMsnd`   | Movie sound (music / SFX)                |
+| `MSND`  | `kctgMsnd`   | Movie sound (music / SFX) — see [sounds.md](sounds.md) |
 | `SND `  | `kctgSnd`    | Raw sound data                           |
 | `CAM `  | `kctgCam`    | Camera definition                        |
 | `GLLT`  | `kctgGllt`   | Light list                               |

@@ -14,6 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
+
 	"github.com/urfave/cli/v2"
 )
 
@@ -87,6 +91,58 @@ func drawCircle(img *image.NRGBA, cx, cy, radius int, c color.NRGBA) {
 			}
 		}
 	}
+}
+
+// audioCue records a single sound event for overlay display purposes.
+type audioCue struct {
+	label     string
+	color     color.NRGBA
+	startNfrm int32
+}
+
+// collectAudioCues scans all actor events and returns one audioCue per aetSnd
+// event that is not silenced (FNoSound == 0). Cues are returned in event order.
+func collectAudioCues(actors []*Actor) []audioCue {
+	var cues []audioCue
+	for _, a := range actors {
+		c := actorColors[a.Def.ARID%8]
+		for _, ev := range a.Events {
+			if ev.AET != aetSnd {
+				continue
+			}
+			snd, err := ParseAEVSND(ev.VarData)
+			if err != nil || snd.FNoSound != 0 {
+				continue
+			}
+			label := fmt.Sprintf("Actor %d: %s", a.Def.ARID, StyLabel(snd.Sty))
+			cues = append(cues, audioCue{label: label, color: c, startNfrm: ev.Nfrm})
+		}
+	}
+	return cues
+}
+
+// activeAudioCues returns cues whose display window covers nfrm.
+// Each cue is shown for 3 frames starting at its startNfrm.
+func activeAudioCues(cues []audioCue, nfrm int32) []audioCue {
+	var active []audioCue
+	for _, c := range cues {
+		if nfrm >= c.startNfrm && nfrm < c.startNfrm+3 {
+			active = append(active, c)
+		}
+	}
+	return active
+}
+
+// drawText renders text onto img at pixel position (x, y) using the basicfont
+// 7×13 bitmap font. y is the baseline coordinate.
+func drawText(img *image.NRGBA, x, y int, text string, c color.NRGBA) {
+	d := &font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(c),
+		Face: basicfont.Face7x13,
+		Dot:  fixed.P(x, y),
+	}
+	d.DrawString(text)
 }
 
 // mbmpToNRGBA converts a palette-indexed MBMPImage to true-colour NRGBA.
@@ -503,6 +559,8 @@ func renderScene(
 
 	fmt.Fprintf(os.Stderr, "scene %d: frames %d..%d  actors: %d\n", sceneIdx, nfrmFirst, nfrmLast, len(actors))
 
+	audioCues := collectAudioCues(actors)
+
 	fevIdx := 0
 	for nfrm := nfrmFirst; nfrm <= nfrmLast; nfrm++ {
 		// Advance GGFR frame events up to this frame.
@@ -552,6 +610,13 @@ func renderScene(
 				continue
 			}
 			drawCircle(frame, sx, sy, 8, actorColors[a.Def.ARID%8])
+		}
+
+		// Draw audio cue labels for any sounds firing in this frame window.
+		lineY := 13
+		for _, cue := range activeAudioCues(audioCues, nfrm) {
+			drawText(frame, 4, lineY, cue.label, cue.color)
+			lineY += 14
 		}
 
 		name := fmt.Sprintf("frame_%04d_%04d.png", sceneIdx, nfrm)
@@ -674,6 +739,8 @@ func renderSceneRGB24(
 
 	fmt.Fprintf(os.Stderr, "scene %d: frames %d..%d  actors: %d\n", sceneIdx, nfrmFirst, nfrmLast, len(actors))
 
+	audioCues := collectAudioCues(actors)
+
 	fevIdx := 0
 	for nfrm := nfrmFirst; nfrm <= nfrmLast; nfrm++ {
 		for fevIdx < len(sd.FrameEvents) && sd.FrameEvents[fevIdx].Nfrm <= nfrm {
@@ -717,6 +784,13 @@ func renderSceneRGB24(
 				continue
 			}
 			drawCircle(frame, sx, sy, 8, actorColors[a.Def.ARID%8])
+		}
+
+		// Draw audio cue labels for any sounds firing in this frame window.
+		lineY := 13
+		for _, cue := range activeAudioCues(audioCues, nfrm) {
+			drawText(frame, 4, lineY, cue.label, cue.color)
+			lineY += 14
 		}
 
 		b := frame.Bounds()
