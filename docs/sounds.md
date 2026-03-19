@@ -14,6 +14,10 @@
 
 ---
 
+See also [actors-and-props.md](actors-and-props.md) for how `GLMS` motion-match sounds relate to `ACTN` action chunks, and [chunky-files.md](chunky-files.md) for which archives contain `MSND` data (`SNDS.3CN`).
+
+---
+
 ## MSND — Movie Sound
 
 **Tag:** `'MSND'` (`kctgMsnd`)

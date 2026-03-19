@@ -360,6 +360,9 @@ directly in `.3MM` files, but are referenced by TAG values stored in ACTR and SC
 
 All tag constants below are defined in `inc/soc.h`.
 
+`TMPL` and `ACTN` are documented in detail in [actors-and-props.md](actors-and-props.md).
+The chunky archives that hold them are catalogued in [chunky-files.md](chunky-files.md).
+
 ### CAM — Camera
 
 **Tag:** `'CAM '` (`kctgCam`)

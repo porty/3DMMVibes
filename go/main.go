@@ -47,6 +47,7 @@ func chunkyCommand() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "ctg", Usage: `Filter by chunk type (4 chars, e.g. "MVIE")`},
 					&cli.IntFlag{Name: "cno", Value: -1, Usage: "Filter by chunk number (-1 = all chunks)"},
+					&cli.BoolFlag{Name: "kids", Usage: "Show child chunk types for each chunk"},
 				},
 				Action: chunkyListAction,
 			},
@@ -88,7 +89,7 @@ func chunkyListAction(c *cli.Context) error {
 	}
 
 	chunks := applyFilters(cf.Chunks, c.String("ctg"), c.Int("cno"))
-	listChunks(cf, chunks)
+	listChunks(cf, chunks, c.Bool("kids"))
 	return nil
 }
 
@@ -132,20 +133,49 @@ func applyFilters(chunks []Chunk, ctgStr string, cnoVal int) []Chunk {
 }
 
 // listChunks prints a summary table to stdout.
-func listChunks(cf *ChunkyFile, chunks []Chunk) {
+func listChunks(cf *ChunkyFile, chunks []Chunk, showKids bool) {
 	fmt.Printf("creator: %-4s  version: %d/%d  total chunks: %d\n\n",
 		ctgToString(cf.Creator), cf.VerCur, cf.VerBack, len(cf.Chunks))
-	fmt.Printf("%-4s  %-10s  %-12s  %-10s  %-5s  %s\n",
-		"CTG", "CNO", "Offset", "Size", "Flags", "Children")
-	fmt.Println(strings.Repeat("-", 58))
+	fmt.Printf("%-4s  %-10s  %-12s  %-10s  %-5s  %-8s  %s\n",
+		"CTG", "CNO", "Offset", "Size", "Flags", "Children", "Name")
+	fmt.Println(strings.Repeat("-", 72))
 	for _, c := range chunks {
-		fmt.Printf("%-4s  0x%08X  0x%08X    %-10d  %-5s  %d\n",
+		kids := fmt.Sprintf("%d", c.CKid)
+		if showKids && c.CKid > 0 {
+			kids = kidsString(c.Kids)
+		}
+		fmt.Printf("%-4s  0x%08X  0x%08X    %-10d  %-5s  %-8s  %s\n",
 			ctgToString(c.CTG), c.CNO, c.Offset, c.Size,
-			flagsString(c), c.CKid)
+			flagsString(c), kids, c.Name)
 	}
 	if len(cf.Chunks) != len(chunks) {
 		fmt.Printf("\n(showing %d of %d chunks after filter)\n", len(chunks), len(cf.Chunks))
 	}
+}
+
+// kidsString returns a compact summary of child chunk types, e.g. "BMDL×4 MTRL×8".
+func kidsString(kids []KID) string {
+	counts := make(map[string]int)
+	order := []string{}
+	for _, k := range kids {
+		tag := ctgToString(k.CTG)
+		if counts[tag] == 0 {
+			order = append(order, tag)
+		}
+		counts[tag]++
+	}
+	var b strings.Builder
+	for i, tag := range order {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		if counts[tag] == 1 {
+			b.WriteString(tag)
+		} else {
+			fmt.Fprintf(&b, "%s×%d", tag, counts[tag])
+		}
+	}
+	return b.String()
 }
 
 // flagsString returns the compact flag characters for a chunk.
