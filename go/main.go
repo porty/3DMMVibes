@@ -26,6 +26,7 @@ func main() {
 			genpaletteCommand(),
 			dagCommand(),
 			renderCommand(),
+			actorCommand(),
 		},
 	}
 	if err := app.Run(os.Args); err != nil {
