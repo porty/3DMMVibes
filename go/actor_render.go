@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"math"
 	"os"
@@ -45,12 +46,12 @@ func actorRenderCommand() *cli.Command {
 		ArgsUsage: "<TMPLS.3CN>",
 		Description: "Renders one cel of an actor template as a flat-shaded PNG.\n" +
 			"Body parts are colored by their body-part-set index (ibset).\n" +
+			"Use --cno all to render every TMPL in the file.\n" +
 			"Character actor CNOs: 0x2010–0x203C in TMPLS.3CN.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "cno",
-				Usage:    "CNO of the TMPL chunk (hex, e.g. 0x2010)",
-				Required: true,
+				Name:  "cno",
+				Usage: `CNO of the TMPL chunk (hex, e.g. 0x2010), or "all"`,
 			},
 			&cli.StringFlag{Name: "o", Usage: "Output PNG file (default: stdout)"},
 			&cli.BoolFlag{Name: "t", Usage: "Display the image in the terminal"},
@@ -58,15 +59,23 @@ func actorRenderCommand() *cli.Command {
 			&cli.IntFlag{Name: "height", Value: 512, Usage: "Output image height in pixels"},
 			&cli.IntFlag{Name: "actn", Value: 0, Usage: "Action CHID to render"},
 			&cli.IntFlag{Name: "cel", Value: 0, Usage: "Cel index within the action"},
+			&cli.IntFlag{Name: "cols", Value: 8, Usage: "Number of columns when rendering --cno all"},
 		},
 		Action: actorRenderAction,
 	}
 }
 
+// renderParams holds the parameters needed to render a single actor template.
+type renderParams struct {
+	w, h     int
+	actnCHID uint32
+	celIdx   int
+}
+
 // worldTriangle is one projected triangle ready for rasterization.
 type worldTriangle struct {
-	sx, sy [3]int    // screen pixel coords of the 3 vertices
-	avgZ   float64   // mean camera-space Z (used for painter's algorithm sort)
+	sx, sy [3]int  // screen pixel coords of the 3 vertices
+	avgZ   float64 // mean camera-space Z (used for painter's algorithm sort)
 	col    color.NRGBA
 }
 
@@ -76,18 +85,20 @@ func actorRenderAction(c *cli.Context) error {
 		return cli.Exit("", 1)
 	}
 
-	// Parse --cno flag (hex string).
 	cnoStr := c.String("cno")
-	var cno uint32
-	if _, err := fmt.Sscanf(cnoStr, "0x%x", &cno); err != nil {
-		if _, err2 := fmt.Sscanf(cnoStr, "%x", &cno); err2 != nil {
-			return fmt.Errorf("invalid --cno %q: expected hex like 0x2010", cnoStr)
-		}
+	if cnoStr == "" {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("--cno is required", 1)
 	}
 
-	w, h := c.Int("width"), c.Int("height")
-	actnCHID := uint32(c.Int("actn"))
-	celIdx := c.Int("cel")
+	p := renderParams{
+		w:        c.Int("width"),
+		h:        c.Int("height"),
+		actnCHID: uint32(c.Int("actn")),
+		celIdx:   c.Int("cel"),
+	}
+	terminal := c.Bool("t")
+	outPath := c.String("o")
 
 	// Open and parse the chunky file.
 	path := c.Args().First()
@@ -102,27 +113,103 @@ func actorRenderAction(c *cli.Context) error {
 		return err
 	}
 
-	// Load template.
-	tmpl, err := LoadTemplate(cf, f, cno)
+	// Collect the CNOs to render.
+	var cnos []uint32
+	if cnoStr == "all" {
+		for _, chunk := range cf.Chunks {
+			if chunk.CTG == ctgTMPL {
+				cnos = append(cnos, chunk.CNO)
+			}
+		}
+		if len(cnos) == 0 {
+			return fmt.Errorf("no TMPL chunks found in %s", path)
+		}
+	} else {
+		var cno uint32
+		if _, err := fmt.Sscanf(cnoStr, "0x%x", &cno); err != nil {
+			if _, err2 := fmt.Sscanf(cnoStr, "%x", &cno); err2 != nil {
+				return fmt.Errorf("invalid --cno %q: expected hex like 0x2010 or \"all\"", cnoStr)
+			}
+		}
+		cnos = []uint32{cno}
+	}
+
+	// Render each CNO.
+	const cropMargin = 8
+
+	if terminal {
+		for _, cno := range cnos {
+			img, err := renderTemplate(cf, f, cno, p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "skip TMPL/0x%08X: %v\n", cno, err)
+				continue
+			}
+			fmt.Printf("TMPL 0x%08X\n", cno)
+			if err, _ := imgterm.Display(cropToContent(img, cropMargin)); err != nil {
+				return fmt.Errorf("display TMPL/0x%08X: %w", cno, err)
+			}
+			fmt.Println()
+		}
+		return nil
+	}
+
+	// PNG output: render all, crop, then arrange in grid or column.
+	var imgs []*image.NRGBA
+	for _, cno := range cnos {
+		img, err := renderTemplate(cf, f, cno, p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skip TMPL/0x%08X: %v\n", cno, err)
+			continue
+		}
+		imgs = append(imgs, cropToContent(img, cropMargin))
+	}
+	if len(imgs) == 0 {
+		return fmt.Errorf("no templates rendered successfully")
+	}
+
+	cols := c.Int("cols")
+	var out *image.NRGBA
+	if len(cnos) > 1 && cols > 1 {
+		out = stitchGrid(imgs, cols)
+	} else {
+		out = stitchVertical(imgs)
+	}
+
+	var w *os.File
+	if outPath == "" {
+		w = os.Stdout
+	} else {
+		w, err = os.Create(outPath)
+		if err != nil {
+			return fmt.Errorf("create %s: %w", outPath, err)
+		}
+		defer w.Close()
+	}
+	return png.Encode(w, out)
+}
+
+// renderTemplate loads and renders one TMPL chunk into an NRGBA image.
+func renderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p renderParams) (*image.NRGBA, error) {
+	tmpl, err := LoadTemplate(cf, r, cno)
 	if err != nil {
-		return fmt.Errorf("loading TMPL/0x%08X: %w", cno, err)
+		return nil, err
 	}
 
 	// Select action.
-	ad, ok := tmpl.Actions[actnCHID]
+	ad, ok := tmpl.Actions[p.actnCHID]
 	if !ok {
-		// Fall back to the first available action.
 		for _, a := range tmpl.Actions {
 			ad = a
 			break
 		}
-		if ad == nil {
-			return fmt.Errorf("no actions found in TMPL/0x%08X", cno)
-		}
+	}
+	if ad == nil {
+		return nil, fmt.Errorf("no actions found")
 	}
 	if len(ad.Cels) == 0 {
-		return fmt.Errorf("action has no cels")
+		return nil, fmt.Errorf("action has no cels")
 	}
+	celIdx := p.celIdx
 	if celIdx >= len(ad.Cels) {
 		celIdx = 0
 	}
@@ -151,7 +238,6 @@ func actorRenderAction(c *cli.Context) error {
 			ibset = tmpl.IBSets[partIdx]
 		}
 
-		// Transform vertices to world space.
 		worldVerts := make([]Vec3, len(model.Verts))
 		for vi, bv := range model.Verts {
 			worldVerts[vi] = applyBMAT34(bv.Pos, mat)
@@ -170,7 +256,7 @@ func actorRenderAction(c *cli.Context) error {
 	}
 
 	if len(allTris) == 0 {
-		return fmt.Errorf("no renderable geometry found in TMPL/0x%08X", cno)
+		return nil, fmt.Errorf("no renderable geometry")
 	}
 
 	// Compute world bounding box for auto-camera.
@@ -194,23 +280,17 @@ func actorRenderAction(c *cli.Context) error {
 		diag = 1
 	}
 
-	// Camera: positioned in front of the actor looking backward (-Z direction).
-	// In BRender row-vector: cam.M[2] is the local Z axis (backward/forward),
-	// cam.M[3] is the camera position, camera looks in the -local-Z direction.
-	// We want the camera at (cx, cy + dy, cz + dist), looking toward center.
-	// Local axes: X=right, Y=up, Z=backward.
 	dist := diag * 2.0
 	camPos := Vec3{X: cx, Y: cy + diag*0.2, Z: cz + dist}
 
-	// Build camera matrix (identity rotation, translated position).
 	var camM [4][3]float64
-	camM[0] = [3]float64{1, 0, 0} // local X = world X (right)
-	camM[1] = [3]float64{0, 1, 0} // local Y = world Y (up)
-	camM[2] = [3]float64{0, 0, 1} // local Z = world Z (backward); camera looks toward -Z
+	camM[0] = [3]float64{1, 0, 0}
+	camM[1] = [3]float64{0, 1, 0}
+	camM[2] = [3]float64{0, 0, 1}
 	camM[3] = [3]float64{camPos.X, camPos.Y, camPos.Z}
 
 	fovRad := 40.0 * math.Pi / 180.0
-	cam := CamParams{M: camM, FOVRad: fovRad, W: w, H: h}
+	cam := CamParams{M: camM, FOVRad: fovRad, W: p.w, H: p.h}
 
 	// Project triangles.
 	var screenTris []worldTriangle
@@ -221,12 +301,10 @@ func actorRenderAction(c *cli.Context) error {
 		sx1, sy1, ok1 := projectWorldPoint(cam, td.world[1].X, td.world[1].Y, td.world[1].Z)
 		sx2, sy2, ok2 := projectWorldPoint(cam, td.world[2].X, td.world[2].Y, td.world[2].Z)
 		if !ok0 && !ok1 && !ok2 {
-			continue // all verts behind camera
+			continue
 		}
 
-		// Average camera-space Z for painter's algorithm (use world Z as proxy).
 		avgZ := (td.world[0].Z + td.world[1].Z + td.world[2].Z) / 3.0
-
 		screenTris = append(screenTris, worldTriangle{
 			sx:   [3]int{sx0, sx1, sx2},
 			sy:   [3]int{sy0, sy1, sy2},
@@ -235,41 +313,115 @@ func actorRenderAction(c *cli.Context) error {
 		})
 	}
 
-	// Sort back-to-front (painter's algorithm: larger Z = farther from cam = draw first).
+	// Sort back-to-front.
 	sort.Slice(screenTris, func(i, j int) bool {
 		return screenTris[i].avgZ > screenTris[j].avgZ
 	})
 
 	// Rasterize.
-	img := image.NewNRGBA(image.Rect(0, 0, w, h))
-	// Black background.
-	for y := range h {
-		for x := range w {
-			img.SetNRGBA(x, y, color.NRGBA{0, 0, 0, 255})
+	img := image.NewNRGBA(image.Rect(0, 0, p.w, p.h))
+	black := color.NRGBA{0, 0, 0, 255}
+	for y := range p.h {
+		for x := range p.w {
+			img.SetNRGBA(x, y, black)
 		}
 	}
 	for _, tri := range screenTris {
 		fillTriangle(img, tri.sx, tri.sy, tri.col)
 	}
+	return img, nil
+}
 
-	// Write output.
-	if c.Bool("t") {
-		if err, _ := imgterm.Display(img); err != nil {
-			return fmt.Errorf("display: %w", err)
+// cropToContent crops an NRGBA image to the bounding box of non-black pixels,
+// plus a small margin. Returns the original image if no content is found.
+func cropToContent(img *image.NRGBA, margin int) *image.NRGBA {
+	b := img.Bounds()
+	minX, minY := b.Max.X, b.Max.Y
+	maxX, maxY := b.Min.X, b.Min.Y
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.NRGBAAt(x, y)
+			if c.R != 0 || c.G != 0 || c.B != 0 {
+				if x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if y > maxY {
+					maxY = y
+				}
+			}
 		}
-		return nil
 	}
-	var out *os.File
-	if outPath := c.String("o"); outPath == "" {
-		out = os.Stdout
-	} else {
-		out, err = os.Create(outPath)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", outPath, err)
+	if minX > maxX || minY > maxY {
+		return img // nothing found
+	}
+	minX = max(b.Min.X, minX-margin)
+	minY = max(b.Min.Y, minY-margin)
+	maxX = min(b.Max.X, maxX+margin+1)
+	maxY = min(b.Max.Y, maxY+margin+1)
+	out := image.NewNRGBA(image.Rect(0, 0, maxX-minX, maxY-minY))
+	draw.Draw(out, out.Bounds(), img, image.Point{minX, minY}, draw.Src)
+	return out
+}
+
+// stitchGrid arranges images into a grid with the given number of columns.
+// Each cell is sized to the maximum width and height across all images.
+// Images are centered within their cell on a black background.
+func stitchGrid(imgs []*image.NRGBA, cols int) *image.NRGBA {
+	if len(imgs) == 0 {
+		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	}
+	cellW, cellH := 0, 0
+	for _, img := range imgs {
+		if dx := img.Bounds().Dx(); dx > cellW {
+			cellW = dx
 		}
-		defer out.Close()
+		if dy := img.Bounds().Dy(); dy > cellH {
+			cellH = dy
+		}
 	}
-	return png.Encode(out, img)
+	rows := (len(imgs) + cols - 1) / cols
+	out := image.NewNRGBA(image.Rect(0, 0, cols*cellW, rows*cellH))
+	for i, img := range imgs {
+		col := i % cols
+		row := i / cols
+		b := img.Bounds()
+		xOff := col*cellW + (cellW-b.Dx())/2
+		yOff := row*cellH + (cellH-b.Dy())/2
+		draw.Draw(out, image.Rect(xOff, yOff, xOff+b.Dx(), yOff+b.Dy()), img, image.Point{}, draw.Src)
+	}
+	return out
+}
+
+// stitchVertical concatenates images top-to-bottom into a single NRGBA image.
+// Images may have different widths; narrower ones are centered on a black background.
+func stitchVertical(imgs []*image.NRGBA) *image.NRGBA {
+	if len(imgs) == 0 {
+		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	}
+	w := 0
+	totalH := 0
+	for _, img := range imgs {
+		if dx := img.Bounds().Dx(); dx > w {
+			w = dx
+		}
+		totalH += img.Bounds().Dy()
+	}
+	out := image.NewNRGBA(image.Rect(0, 0, w, totalH))
+	y := 0
+	for _, img := range imgs {
+		b := img.Bounds()
+		dx := b.Dx()
+		xOff := (w - dx) / 2 // center narrower images
+		draw.Draw(out, image.Rect(xOff, y, xOff+dx, y+b.Dy()), img, image.Point{}, draw.Src)
+		y += b.Dy()
+	}
+	return out
 }
 
 // fillTriangle rasterizes a flat-shaded triangle onto img using a scanline fill.
@@ -288,7 +440,6 @@ func fillTriangle(img *image.NRGBA, sx, sy [3]int, col color.NRGBA) {
 
 	bounds := img.Bounds()
 
-	// scanline fill between two edges for a Y range.
 	fillSpan := func(y, x0, x1 int) {
 		if y < bounds.Min.Y || y >= bounds.Max.Y {
 			return
@@ -303,7 +454,6 @@ func fillTriangle(img *image.NRGBA, sx, sy [3]int, col color.NRGBA) {
 		}
 	}
 
-	// interpolate X along an edge from (ax,ay) to (bx,by) at scan line y.
 	edgeX := func(ax, ay, bx, by, y int) int {
 		if ay == by {
 			return ax
@@ -314,16 +464,10 @@ func fillTriangle(img *image.NRGBA, sx, sy [3]int, col color.NRGBA) {
 	y0, y1, y2 := v[0][1], v[1][1], v[2][1]
 	x0, x1, x2 := v[0][0], v[1][0], v[2][0]
 
-	// Top half: v[0] → v[1] and v[0] → v[2].
 	for y := y0; y <= y1; y++ {
-		xa := edgeX(x0, y0, x1, y1, y)
-		xb := edgeX(x0, y0, x2, y2, y)
-		fillSpan(y, xa, xb)
+		fillSpan(y, edgeX(x0, y0, x1, y1, y), edgeX(x0, y0, x2, y2, y))
 	}
-	// Bottom half: v[1] → v[2] and v[0] → v[2].
 	for y := y1 + 1; y <= y2; y++ {
-		xa := edgeX(x1, y1, x2, y2, y)
-		xb := edgeX(x0, y0, x2, y2, y)
-		fillSpan(y, xa, xb)
+		fillSpan(y, edgeX(x1, y1, x2, y2, y), edgeX(x0, y0, x2, y2, y))
 	}
 }
