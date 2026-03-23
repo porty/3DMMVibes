@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -9,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/porty/3dmm-go/imgterm"
 	"github.com/urfave/cli/v2"
@@ -33,9 +35,154 @@ func actorCommand() *cli.Command {
 		Name:  "actor",
 		Usage: "Tools for working with actor templates",
 		Subcommands: []*cli.Command{
+			actorListCommand(),
 			actorRenderCommand(),
 		},
 	}
+}
+
+// actorListCommand returns the `actor list` subcommand.
+func actorListCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "list",
+		Usage:     "List all TMPL chunks and their actions",
+		ArgsUsage: "<TMPLS.3CN>",
+		Action:    actorListAction,
+	}
+}
+
+func actorListAction(c *cli.Context) error {
+	if c.NArg() < 1 {
+		_ = cli.ShowSubcommandHelp(c)
+		return cli.Exit("", 1)
+	}
+
+	f, err := os.Open(c.Args().First())
+	if err != nil {
+		return fmt.Errorf("open %s: %w", c.Args().First(), err)
+	}
+	defer f.Close()
+
+	cf, err := ParseChunkyFile(f)
+	if err != nil {
+		return err
+	}
+
+	// grftmpl flags (from inc/tmpl.h).
+	const (
+		ftmplOnlyCustomCostumes = uint32(1)
+		ftmplTdt                = uint32(2)
+		ftmplProp               = uint32(4)
+	)
+
+	// grfactn flags (from inc/tmpl.h).
+	const (
+		factnRotateX = uint32(1)
+		factnRotateY = uint32(2)
+		factnRotateZ = uint32(4)
+		factnStatic  = uint32(8)
+	)
+
+	for _, chunk := range cf.Chunks {
+		if chunk.CTG != ctgTMPL {
+			continue
+		}
+
+		// Read TMPLF header for grftmpl.
+		data, err := ChunkData(f, chunk)
+		if err != nil || len(data) < 16 {
+			fmt.Printf("TMPL 0x%08X  <unreadable>\n", chunk.CNO)
+			continue
+		}
+		grftmpl := binary.LittleEndian.Uint32(data[12:16])
+
+		kind := "character"
+		if grftmpl&ftmplProp != 0 {
+			kind = "prop"
+		} else if grftmpl&ftmplTdt != 0 {
+			kind = "tdt"
+		}
+
+		// Count body parts from GLBS.
+		numParts := 0
+		for _, kid := range chunk.Kids {
+			if kid.CTG == ctgGLBS {
+				glbsChunk, ok := cf.FindChunk(kid.CTG, kid.CNO)
+				if ok {
+					glbsData, err := ChunkData(f, glbsChunk)
+					if err == nil && len(glbsData) >= 12 {
+						numParts = int(binary.LittleEndian.Uint32(glbsData[8:12]))
+					}
+				}
+				break
+			}
+		}
+
+		// Collect ACTN children sorted by CHID.
+		type actnInfo struct {
+			chid  uint32
+			cels  int
+			flags uint32
+		}
+		var actns []actnInfo
+		for _, kid := range chunk.Kids {
+			if kid.CTG != ctgACTN {
+				continue
+			}
+			actnChunk, ok := cf.FindChunk(kid.CTG, kid.CNO)
+			if !ok {
+				continue
+			}
+			// Read grfactn from ACTNF header (8 bytes: bo, osk, grfactn).
+			actnData, err := ChunkData(f, actnChunk)
+			var grfactn uint32
+			if err == nil && len(actnData) >= 8 {
+				grfactn = binary.LittleEndian.Uint32(actnData[4:8])
+			}
+			// Count cels from GGCL.
+			cels := 0
+			for _, akid := range actnChunk.Kids {
+				if akid.CTG == ctgGGCL {
+					ggclChunk, ok := cf.FindChunk(akid.CTG, akid.CNO)
+					if ok {
+						ggclData, err := ChunkData(f, ggclChunk)
+						if err == nil && len(ggclData) >= 12 {
+							cels = int(binary.LittleEndian.Uint32(ggclData[8:12]))
+						}
+					}
+					break
+				}
+			}
+			actns = append(actns, actnInfo{chid: kid.CHID, cels: cels, flags: grfactn})
+		}
+		// Sort by CHID.
+		sort.Slice(actns, func(i, j int) bool { return actns[i].chid < actns[j].chid })
+
+		fmt.Printf("TMPL 0x%08X  %-9s  parts=%d  actions=%d\n",
+			chunk.CNO, kind, numParts, len(actns))
+
+		for _, a := range actns {
+			var flags []string
+			if a.flags&factnStatic != 0 {
+				flags = append(flags, "static")
+			}
+			if a.flags&factnRotateX != 0 {
+				flags = append(flags, "rotX")
+			}
+			if a.flags&factnRotateY != 0 {
+				flags = append(flags, "rotY")
+			}
+			if a.flags&factnRotateZ != 0 {
+				flags = append(flags, "rotZ")
+			}
+			flagStr := ""
+			if len(flags) > 0 {
+				flagStr = "  [" + strings.Join(flags, ",") + "]"
+			}
+			fmt.Printf("  action %2d  cels=%d%s\n", a.chid, a.cels, flagStr)
+		}
+	}
+	return nil
 }
 
 // actorRenderCommand returns the `actor render` subcommand.
