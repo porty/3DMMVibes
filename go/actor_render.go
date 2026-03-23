@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/porty/3dmm-go/imgterm"
 	"github.com/urfave/cli/v2"
 )
 
@@ -52,6 +53,7 @@ func actorRenderCommand() *cli.Command {
 				Required: true,
 			},
 			&cli.StringFlag{Name: "o", Usage: "Output PNG file (default: stdout)"},
+			&cli.BoolFlag{Name: "t", Usage: "Display the image in the terminal"},
 			&cli.IntFlag{Name: "width", Value: 512, Usage: "Output image width in pixels"},
 			&cli.IntFlag{Name: "height", Value: 512, Usage: "Output image height in pixels"},
 			&cli.IntFlag{Name: "actn", Value: 0, Usage: "Action CHID to render"},
@@ -251,6 +253,12 @@ func actorRenderAction(c *cli.Context) error {
 	}
 
 	// Write output.
+	if c.Bool("t") {
+		if err, _ := imgterm.Display(img); err != nil {
+			return fmt.Errorf("display: %w", err)
+		}
+		return nil
+	}
 	var out *os.File
 	if outPath := c.String("o"); outPath == "" {
 		out = os.Stdout
