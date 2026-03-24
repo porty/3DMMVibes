@@ -33,6 +33,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"unicode/utf16"
 )
 
 // Chunky file format constants.
@@ -340,17 +341,51 @@ func parseCRP(data []byte, cbFixed int32, oldIndex bool) (Chunk, error) {
 	}
 }
 
-// parseSTN reads a 2-byte LE length-prefixed string from the start of data.
-// Returns the string or "" if data is too short or the length is zero.
+// parseSTN reads a Kauai STN string from the start of data.
+//
+// On-disk layout (written by STN::GetData / STN::FRead):
+//
+//	[osk: 2 bytes LE]  OS/encoding kind (0x0303 = koskSbWin, single-byte Windows)
+//	[cch: 1 byte]      string length
+//	[chars: cch bytes] string content
+//	[NUL: 1 byte]      null terminator
+//
+// Returns "" if data is too short, the osk is unrecognised, or cch is zero.
 func parseSTN(data []byte) string {
-	if len(data) < 2 {
+	const (
+		koskSbWin  = 0x0303 // single-byte Windows (used by 3DMMForever files)
+		koskSbMac  = 0x0101
+		koskUniWin = 0x0505
+		koskUniMac = 0x0404
+	)
+	if len(data) < 4 { // need at least osk(2) + cch(1) + NUL(1)
 		return ""
 	}
-	n := int(binary.LittleEndian.Uint16(data[:2]))
-	if n == 0 || len(data) < 2+n {
+	osk := binary.LittleEndian.Uint16(data[:2])
+	switch osk {
+	case koskSbWin, koskSbMac:
+		n := int(data[2])
+		if n == 0 || len(data) < 3+n {
+			return ""
+		}
+		return string(data[3 : 3+n])
+	case koskUniWin, koskUniMac:
+		// 2-byte LE length, followed by n UTF-16 code units + null
+		if len(data) < 6 {
+			return ""
+		}
+		n := int(binary.LittleEndian.Uint16(data[2:4]))
+		if n == 0 || len(data) < 4+n*2 {
+			return ""
+		}
+		u16 := make([]uint16, n)
+		for i := range u16 {
+			u16[i] = binary.LittleEndian.Uint16(data[4+i*2 : 6+i*2])
+		}
+		return string(utf16.Decode(u16))
+	default:
 		return ""
 	}
-	return string(data[2 : 2+n])
 }
 
 // parseKIDs reads ckid KID records from the start of varData.
