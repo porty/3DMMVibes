@@ -9,6 +9,10 @@ import (
 	"io"
 )
 
+type Palette struct {
+	Colors []color.Color
+}
+
 // ZBMPImage is a decoded ZBMP (Z-buffer) chunk.
 //
 // Pixels are stored in bounding-rect space with stride = Rect.Dx().

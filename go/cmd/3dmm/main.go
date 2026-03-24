@@ -15,7 +15,6 @@ func main() {
 			chunkyCommand(),
 			mbmpCommand(),
 			bkgdCommand(),
-			genpaletteCommand(),
 			dagCommand(),
 			renderCommand(),
 			actorCommand(),
