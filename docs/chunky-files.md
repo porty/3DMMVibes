@@ -193,6 +193,91 @@ Help text and audio for the in-game help system.
 
 ---
 
+## GG Index and CRP Format
+
+The chunk index at the end of every chunky file is a General Group (GG). Its on-disk layout:
+
+```
+[GGF header: 20 bytes]
+  bo       int16   byte-order marker (0x0001 = LE)
+  osk      int16   OS/encoding kind
+  ilocMac  int32   total slot count (including deleted)
+  bvMac    int32   byte size of variable-data blob
+  clocFree int32   free-list head (-1 = none)
+  cbFixed  int32   fixed-part size per entry (20 = CRPSM, 32 = CRPBG)
+
+[variable-data blob: bvMac bytes]
+  Each live slot occupies one contiguous region:
+    [fixed CRP part]
+    [ckid × 12 bytes — KID child references: CTG uint32, CNO uint32, CHID uint32]
+    [STN chunk name (see below)]
+
+[LOC array: ilocMac × 8 bytes]
+  Each entry: bv int32, cb int32
+  bv = -1 → deleted/free slot; otherwise byte offset into variable-data blob
+```
+
+**CRPSM** (20 bytes, `cbFixed=20` — used by 3DMMForever files, version ≥ 4):
+
+| Offset | Field | Description |
+|--------|-------|-------------|
+| 0 | CTG uint32 | chunk type tag |
+| 4 | CNO uint32 | chunk number |
+| 8 | FP int32 | file offset of chunk data |
+| 12 | LuGrfcrpCb uint32 | high 24 bits = data size (cb); low 8 bits = grfcrp flags |
+| 16 | CKid uint16 | number of child-chunk KID entries |
+| 18 | CCrpRef uint16 | number of parent references |
+
+**CRPBG** (32 bytes, `cbFixed=32` — used by original 3DMM files):
+
+| Offset | Field | Description |
+|--------|-------|-------------|
+| 0 | CTG uint32 | |
+| 4 | CNO uint32 | |
+| 8 | FP int32 | file offset |
+| 12 | Cb int32 | data size |
+| 16 | CKid int32 | child count |
+| 20 | CCrpRef int32 | parent count |
+| 24 | RTI int32 | runtime ID (not meaningful on disk) |
+| 28 | Grfcrp uint32 | flags bitmask (v≥4) or four flag bytes (v<4) |
+
+**grfcrp flag bits:**
+
+| Bit | Constant | Meaning |
+|-----|----------|---------|
+| 0x01 | `FcrpOnExtra` | data on companion file, not main `.chk` |
+| 0x02 | `FcrpLoner` | chunk may exist without a parent |
+| 0x04 | `FcrpPacked` | data compressed with Kauai codec |
+| 0x10 | `FcrpForest` | data is an embedded chunk forest |
+
+---
+
+## STN — Chunk Name String Format
+
+Chunk names in the GG index are stored as Kauai `STN` objects. The on-disk layout (written by `STN::GetData`/`STN::FRead` in `kauai/src/utilstr.cpp`):
+
+```
+osk   int16   OS/encoding kind
+cch   byte    string length (single-byte encodings)
+chars [cch]   string content (no BOM)
+NUL   byte    null terminator
+```
+
+The `osk` values that appear in practice:
+
+| osk | Constant | Encoding | Length field |
+|-----|----------|----------|-------------|
+| `0x0303` | `koskSbWin` | Windows single-byte (Win-1252) | 1-byte `cch` |
+| `0x0101` | `koskSbMac` | Mac single-byte | 1-byte `cch` |
+| `0x0505` | `koskUniWin` | UTF-16 LE | 2-byte `cch` (code units) |
+| `0x0404` | `koskUniMac` | UTF-16 BE | 2-byte `cch` (code units) |
+
+All 3DMMForever content files use `koskSbWin = 0x0303`. The total byte size of an STN with `n` characters is `2 + 1 + n + 1 = n + 4`.
+
+> **Note:** the `osk` prefix is easy to mistake for a 2-byte length prefix — do not treat the first 2 bytes of an STN as a length directly.
+
+---
+
 ## Chunk Type Reference
 
 All `kctg*` constants are defined in `inc/soc.h` (game-level) and `kauai/src/framedef.h` (framework-level).
