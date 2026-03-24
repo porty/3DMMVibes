@@ -1,4 +1,4 @@
-package main
+package mm
 
 import (
 	"encoding/binary"
@@ -39,17 +39,17 @@ type ActorDef struct {
 // RoutePoint is one entry from a PATH chunk (RPT on disk).
 type RoutePoint struct {
 	X, Y, Z float64 // world-space position
-	Dwr      float64 // distance to next point; <0 means use template default
+	Dwr     float64 // distance to next point; <0 means use template default
 }
 
 // ActorEvent is one entry from a GGAE chunk (AEV on disk).
 type ActorEvent struct {
-	AET         int32
-	Nfrm        int32
-	Irpt        int32   // route-point index
-	DwrOffset   float64 // distance into segment [Irpt, Irpt+1]
-	Dnfrm       int32
-	VarData     []byte
+	AET       int32
+	Nfrm      int32
+	Irpt      int32   // route-point index
+	DwrOffset float64 // distance into segment [Irpt, Irpt+1]
+	Dnfrm     int32
+	VarData   []byte
 }
 
 // ParseActorDef parses the ACTF header from raw ACTR chunk data.
@@ -271,7 +271,7 @@ type AEVSND struct {
 	FLoop    int32
 	FQueue   int32
 	Vlm      int32
-	Celn     int32  // -1 means not a motion-match sound
+	Celn     int32 // -1 means not a motion-match sound
 	Sty      int32
 	FNoSound int32
 	CHID     uint32
@@ -366,5 +366,3 @@ func LoadActor(cf *ChunkyFile, r io.ReaderAt, actrCNO uint32) (*Actor, error) {
 
 	return &Actor{Def: def, Path: path, Events: events}, nil
 }
-
-

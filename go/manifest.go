@@ -1,4 +1,4 @@
-package main
+package mm
 
 import (
 	"encoding/binary"
@@ -42,8 +42,8 @@ type Manifest struct {
 	Chunks       []ManifestChunk `json:"chunks"`
 }
 
-// writeManifest encodes m as indented JSON and writes it to <outDir>/manifest.json.
-func writeManifest(outDir string, m *Manifest) error {
+// WriteManifest encodes m as indented JSON and writes it to <outDir>/manifest.json.
+func WriteManifest(outDir string, m *Manifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding manifest: %w", err)
@@ -55,12 +55,12 @@ func writeManifest(outDir string, m *Manifest) error {
 	return nil
 }
 
-// buildManifestChunk builds a ManifestChunk from a Chunk and extraction metadata.
-func buildManifestChunk(c Chunk, file *string, compressed *bool, sizeUnpacked *int32) ManifestChunk {
+// BuildManifestChunk builds a ManifestChunk from a Chunk and extraction metadata.
+func BuildManifestChunk(c Chunk, file *string, compressed *bool, sizeUnpacked *int32) ManifestChunk {
 	kids := make([]ManifestKID, len(c.Kids))
 	for i, k := range c.Kids {
 		kids[i] = ManifestKID{
-			CTG:  ctgToString(k.CTG),
+			CTG:  CTGToString(k.CTG),
 			CNO:  fmt.Sprintf("0x%08X", k.CNO),
 			CHID: k.CHID,
 		}
@@ -74,7 +74,7 @@ func buildManifestChunk(c Chunk, file *string, compressed *bool, sizeUnpacked *i
 
 	return ManifestChunk{
 		Order:        c.Order,
-		CTG:          ctgToString(c.CTG),
+		CTG:          CTGToString(c.CTG),
 		CNO:          fmt.Sprintf("0x%08X", c.CNO),
 		File:         file,
 		SizeRaw:      c.Size,
@@ -109,17 +109,17 @@ func decodeFlagsStrings(flags uint32) []string {
 	return out
 }
 
-// crpFormatString returns the human-readable CRP format name for cbFixed.
-func crpFormatString(cbFixed int32) string {
+// CRPFormatString returns the human-readable CRP format name for cbFixed.
+func CRPFormatString(cbFixed int32) string {
 	if cbFixed == crpbgFixedSize {
 		return "CRPBG"
 	}
 	return "CRPSM"
 }
 
-// peekUnpackedSize reads cbDst from bytes [4:8] of a CODM-wrapped payload
+// PeekUnpackedSize reads cbDst from bytes [4:8] of a CODM-wrapped payload
 // (big-endian uint32) without decompressing. Returns 0 on error.
-func peekUnpackedSize(raw []byte) int32 {
+func PeekUnpackedSize(raw []byte) int32 {
 	if len(raw) < 8 {
 		return 0
 	}

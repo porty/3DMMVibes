@@ -1,20 +1,10 @@
-package main
+package mm
 
 import (
 	"encoding/binary"
 	"fmt"
 	"io"
 	"sort"
-)
-
-// Chunk type tags for template/action chunks.
-const (
-	ctgTMPL = uint32('T')<<24 | uint32('M')<<16 | uint32('P')<<8 | uint32('L')
-	ctgACTN = uint32('A')<<24 | uint32('C')<<16 | uint32('T')<<8 | uint32('N')
-	ctgBMDL = uint32('B')<<24 | uint32('M')<<16 | uint32('D')<<8 | uint32('L')
-	ctgGGCL = uint32('G')<<24 | uint32('G')<<16 | uint32('C')<<8 | uint32('L')
-	ctgGLXF = uint32('G')<<24 | uint32('L')<<16 | uint32('X')<<8 | uint32('F')
-	ctgGLBS = uint32('G')<<24 | uint32('L')<<16 | uint32('B')<<8 | uint32('S')
 )
 
 // BMAT34 is a BRender 4×3 matrix (row-vector convention).
@@ -54,7 +44,7 @@ type LoadedTemplate struct {
 
 // LoadTemplate reads a TMPL chunk (by CNO) from cf and parses its full subtree.
 func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, error) {
-	tmplChunk, ok := cf.FindChunk(ctgTMPL, cno)
+	tmplChunk, ok := cf.FindChunk(TagTMPL, cno)
 	if !ok {
 		return nil, fmt.Errorf("TMPL/0x%08X not found", cno)
 	}
@@ -77,7 +67,7 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 
 	// Load GLBS for body-part-set mapping.
 	for _, kid := range tmplChunk.Kids {
-		if kid.CTG != ctgGLBS {
+		if kid.CTG != TagGLBS {
 			continue
 		}
 		glbsChunk, ok := cf.FindChunk(kid.CTG, kid.CNO)
@@ -99,7 +89,7 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 
 	// Load BMDL children.
 	for _, kid := range tmplChunk.Kids {
-		if kid.CTG != ctgBMDL {
+		if kid.CTG != TagBMDL {
 			continue
 		}
 		bmdlChunk, ok := cf.FindChunk(kid.CTG, kid.CNO)
@@ -125,14 +115,14 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 	}
 	var actnKids []actnKid
 	for _, kid := range tmplChunk.Kids {
-		if kid.CTG == ctgACTN {
+		if kid.CTG == TagACTN {
 			actnKids = append(actnKids, actnKid{kid.CHID, kid.CNO})
 		}
 	}
 	sort.Slice(actnKids, func(i, j int) bool { return actnKids[i].chid < actnKids[j].chid })
 
 	for _, ak := range actnKids {
-		actnChunk, ok := cf.FindChunk(ctgACTN, ak.cno)
+		actnChunk, ok := cf.FindChunk(TagACTN, ak.cno)
 		if !ok {
 			continue
 		}
@@ -153,9 +143,9 @@ func loadAction(cf *ChunkyFile, r io.ReaderAt, actnChunk Chunk, numParts int) (*
 	var hasGGCL, hasGLXF bool
 	for _, kid := range actnChunk.Kids {
 		switch kid.CTG {
-		case ctgGGCL:
+		case TagGGCL:
 			ggclChunk, hasGGCL = cf.FindChunk(kid.CTG, kid.CNO)
-		case ctgGLXF:
+		case TagGLXF:
 			glxfChunk, hasGLXF = cf.FindChunk(kid.CTG, kid.CNO)
 		}
 	}

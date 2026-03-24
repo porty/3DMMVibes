@@ -1,4 +1,4 @@
-package main
+package mm
 
 import (
 	"bufio"
@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	defaultWidth  = 544
-	defaultHeight = 306
+	DefaultWidth  = 544
+	DefaultHeight = 306
 )
 
 // actorColors is a fixed palette of 8 distinct semi-transparent NRGBA colors
@@ -41,7 +41,7 @@ var actorColors = [8]color.NRGBA{
 
 // CamParams holds the camera parameters needed for 3D→2D projection.
 type CamParams struct {
-	M      [4][3]float64 // BMAT34 rows — camera-to-world model matrix (row-vector convention).
+	M [4][3]float64 // BMAT34 rows — camera-to-world model matrix (row-vector convention).
 	// Row 3 is the camera position in world space; rows 0–2 are the camera's
 	// local X/Y/Z axes expressed in world space.  To project a world point,
 	// invert this matrix: subtract M[3] then dot-product with each row.
@@ -165,10 +165,10 @@ func mbmpToNRGBA(img *MBMPImage, pal Palette) *image.NRGBA {
 // blankFrame returns a solid mid-gray 544x306 NRGBA image used as a fallback
 // when no background is available.
 func blankFrame() *image.NRGBA {
-	img := image.NewNRGBA(image.Rect(0, 0, defaultWidth, defaultHeight))
+	img := image.NewNRGBA(image.Rect(0, 0, DefaultWidth, DefaultHeight))
 	gray := color.NRGBA{R: 128, G: 128, B: 128, A: 255}
-	for y := range defaultHeight {
-		for x := range defaultWidth {
+	for y := range DefaultHeight {
+		for x := range DefaultWidth {
 			img.SetNRGBA(x, y, gray)
 		}
 	}
@@ -200,7 +200,7 @@ func defaultCamParams(w, h int) CamParams {
 //	[16:28] APOS  (3 × BRS)
 //	[28:76] BMAT34 bmat34Cam (4×3 int32 BRS, row-major)
 func LoadCamParams(bkgdCF *ChunkyFile, bkgdR io.ReaderAt, bkgdChunk Chunk, icam, w, h int) (*CamParams, error) {
-	camChunk, ok := bkgdCF.FindChildByChidCTG(bkgdChunk, uint32(icam), ctgCAM)
+	camChunk, ok := bkgdCF.FindChildByChidCTG(bkgdChunk, uint32(icam), TagCAM)
 	if !ok {
 		return nil, fmt.Errorf("cam: CAM chunk with CHID=%d not found in BKGD 0x%08X", icam, bkgdChunk.CNO)
 	}
@@ -267,7 +267,7 @@ func FindBKGDInDir(dir string, cno uint32) (*ChunkyFile, *os.File, Chunk, error)
 			f.Close()
 			continue
 		}
-		if chunk, ok := cf.FindChunk(ctgBKGD, cno); ok {
+		if chunk, ok := cf.FindChunk(TagBKGD, cno); ok {
 			return cf, f, chunk, nil
 		}
 		f.Close()
@@ -309,7 +309,7 @@ func renderCommand() *cli.Command {
 					"Example:\n"+
 					"  3dmm render rgb24 --bkgddir ./content movie.3mm \\\n"+
 					"    | ffmpeg -f rawvideo -video_size %[1]dx%[2]d -pixel_format rgb24 -framerate 12 -i - output.mp4",
-					defaultWidth, defaultHeight),
+					DefaultWidth, DefaultHeight),
 				Flags: append(commonFlags,
 					&cli.StringFlag{Name: "output", Value: "-", Usage: `Output file path; "-" writes to stdout`},
 				),
@@ -324,9 +324,9 @@ func renderCommand() *cli.Command {
 					"3D Movie Maker movies run at 12 frames per second.\n\n"+
 					"Example:\n"+
 					"  3dmm render ffmpeg --bkgddir ./content --video-size %[1]dx%[2]d movie.3mm output.mp4",
-					defaultWidth, defaultHeight),
+					DefaultWidth, DefaultHeight),
 				Flags: append(commonFlags,
-					&cli.StringFlag{Name: "video-size", Value: fmt.Sprintf("%dx%d", defaultWidth, defaultHeight), Usage: "Frame dimensions WxH (must match background resolution)"},
+					&cli.StringFlag{Name: "video-size", Value: fmt.Sprintf("%dx%d", DefaultWidth, DefaultHeight), Usage: "Frame dimensions WxH (must match background resolution)"},
 					&cli.IntFlag{Name: "framerate", Value: 12, Usage: "Output framerate passed to ffmpeg"},
 					&cli.StringFlag{Name: "ffmpeg-bin", Value: "ffmpeg", Usage: "Path to ffmpeg binary"},
 				),
@@ -579,7 +579,7 @@ func renderScene(
 			w, h := frame.Bounds().Dx(), frame.Bounds().Dy()
 
 			// Find the BKGD chunk by CNO in the content file.
-			if bkgdChunk, ok := currentBkgd.cf.FindChunk(ctgBKGD, currentBkgdTag.CNO); ok {
+			if bkgdChunk, ok := currentBkgd.cf.FindChunk(TagBKGD, currentBkgdTag.CNO); ok {
 				cp, err := LoadCamParams(currentBkgd.cf, currentBkgd.file, bkgdChunk, currentCam, w, h)
 				if err == nil {
 					cam = *cp
@@ -592,7 +592,7 @@ func renderScene(
 		} else {
 			frame = blankFrame()
 			// cam = defaultCamParams(640, 480)
-			cam = defaultCamParams(defaultWidth, defaultHeight)
+			cam = defaultCamParams(DefaultWidth, DefaultHeight)
 			if currentBkgd != nil {
 				fmt.Fprintf(os.Stderr, "warning: scene %d frame %d: camera %d out of range (%d angles)\n",
 					sceneIdx, nfrm, currentCam, len(currentBkgd.scene.Angles))
@@ -755,7 +755,7 @@ func renderSceneRGB24(
 			angle := currentBkgd.scene.Angles[currentCam]
 			frame = mbmpToNRGBA(angle.Img, currentBkgd.scene.Palette)
 			fw, fh := frame.Bounds().Dx(), frame.Bounds().Dy()
-			if bkgdChunk, ok := currentBkgd.cf.FindChunk(ctgBKGD, currentBkgdTag.CNO); ok {
+			if bkgdChunk, ok := currentBkgd.cf.FindChunk(TagBKGD, currentBkgdTag.CNO); ok {
 				cp, err := LoadCamParams(currentBkgd.cf, currentBkgd.file, bkgdChunk, currentCam, fw, fh)
 				if err == nil {
 					cam = *cp
@@ -767,7 +767,7 @@ func renderSceneRGB24(
 			}
 		} else {
 			frame = blankFrame()
-			cam = defaultCamParams(defaultWidth, defaultHeight)
+			cam = defaultCamParams(DefaultWidth, DefaultHeight)
 			if currentBkgd != nil {
 				fmt.Fprintf(os.Stderr, "warning: scene %d frame %d: camera %d out of range (%d angles)\n",
 					sceneIdx, nfrm, currentCam, len(currentBkgd.scene.Angles))

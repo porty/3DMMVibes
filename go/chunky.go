@@ -1,5 +1,3 @@
-// Package main implements a chunky file parser.
-//
 // Chunky files (.chk) are the binary data format used by Kauai and 3D Movie
 // Maker. Each file contains a heap of typed data "chunks" identified by a
 // (CTG, CNO) pair, plus an index implemented as a General Group (GG) stored
@@ -26,7 +24,7 @@
 //   - ckid × 12 bytes: KID child-chunk references
 //   - remaining bytes: STN chunk name (may be empty)
 
-package main
+package mm
 
 import (
 	"bytes"
@@ -438,23 +436,23 @@ func ChunkData(r io.ReaderAt, c Chunk) ([]byte, error) {
 	}
 	raw := make([]byte, c.Size)
 	if _, err := r.ReadAt(raw, int64(c.Offset)); err != nil {
-		return nil, fmt.Errorf("reading chunk %s/0x%08X at 0x%X: %w", ctgToString(c.CTG), c.CNO, c.Offset, err)
+		return nil, fmt.Errorf("reading chunk %s/0x%08X at 0x%X: %w", CTGToString(c.CTG), c.CNO, c.Offset, err)
 	}
 	if c.IsPacked() {
 		data, err := DecodeKauaiChunk(raw)
 		if err != nil {
-			return nil, fmt.Errorf("decompressing chunk %s/0x%08X: %w", ctgToString(c.CTG), c.CNO, err)
+			return nil, fmt.Errorf("decompressing chunk %s/0x%08X: %w", CTGToString(c.CTG), c.CNO, err)
 		}
 		return data, nil
 	}
 	return raw, nil
 }
 
-// ctgToString converts a CTG uint32 (read as little-endian from disk) to its
+// CTGToString converts a CTG uint32 (read as little-endian from disk) to its
 // human-readable 4-char form. Non-printable bytes are replaced with '.'.
 //
 // Example: 0x4D564945 (LE read of "MVIE" bytes) → "MVIE"
-func ctgToString(ctg uint32) string {
+func CTGToString(ctg uint32) string {
 	b := [4]byte{byte(ctg >> 24), byte(ctg >> 16), byte(ctg >> 8), byte(ctg)}
 	for i, c := range b {
 		if c < 0x20 || c == 0x7F {

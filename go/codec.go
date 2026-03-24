@@ -1,4 +1,4 @@
-// Package main — Kauai codec decompressor.
+// Kauai codec decompressor.
 //
 // Compressed chunk payload layout (prepended by the CODM wrapper):
 //
@@ -11,7 +11,8 @@
 // References: kauai/src/codkauai.cpp, kauai/src/codkpri.h,
 //
 //	docs/kauai-codec.md
-package main
+
+package mm
 
 import (
 	"encoding/binary"

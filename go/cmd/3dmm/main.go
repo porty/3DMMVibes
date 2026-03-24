@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	mm "github.com/porty/3dmm-go"
 	"github.com/porty/3dmm-go/imgterm"
 	"github.com/urfave/cli/v2"
 )
@@ -84,7 +85,7 @@ func chunkyListAction(c *cli.Context) error {
 	}
 	defer f.Close()
 
-	cf, err := ParseChunkyFile(f)
+	cf, err := mm.ParseChunkyFile(f)
 	if err != nil {
 		return err
 	}
@@ -106,7 +107,7 @@ func chunkyExtractAction(c *cli.Context) error {
 	}
 	defer f.Close()
 
-	cf, err := ParseChunkyFile(f)
+	cf, err := mm.ParseChunkyFile(f)
 	if err != nil {
 		return err
 	}
@@ -116,11 +117,11 @@ func chunkyExtractAction(c *cli.Context) error {
 }
 
 // applyFilters narrows the chunk list by CTG and/or CNO.
-func applyFilters(chunks []Chunk, ctgStr string, cnoVal int) []Chunk {
+func applyFilters(chunks []mm.Chunk, ctgStr string, cnoVal int) []mm.Chunk {
 	if ctgStr == "" && cnoVal < 0 {
 		return chunks
 	}
-	var out []Chunk
+	var out []mm.Chunk
 	for _, c := range chunks {
 		if ctgStr != "" && c.CTG != parseCTGString(ctgStr) {
 			continue
@@ -134,9 +135,9 @@ func applyFilters(chunks []Chunk, ctgStr string, cnoVal int) []Chunk {
 }
 
 // listChunks prints a summary table to stdout.
-func listChunks(cf *ChunkyFile, chunks []Chunk, showKids bool) {
+func listChunks(cf *mm.ChunkyFile, chunks []mm.Chunk, showKids bool) {
 	fmt.Printf("creator: %-4s  version: %d/%d  total chunks: %d\n\n",
-		ctgToString(cf.Creator), cf.VerCur, cf.VerBack, len(cf.Chunks))
+		mm.CTGToString(cf.Creator), cf.VerCur, cf.VerBack, len(cf.Chunks))
 	fmt.Printf("%-4s  %-10s  %-12s  %-10s  %-5s  %-8s  %s\n",
 		"CTG", "CNO", "Offset", "Size", "Flags", "Children", "Name")
 	fmt.Println(strings.Repeat("-", 72))
@@ -146,7 +147,7 @@ func listChunks(cf *ChunkyFile, chunks []Chunk, showKids bool) {
 			kids = kidsString(c.Kids)
 		}
 		fmt.Printf("%-4s  0x%08X  0x%08X    %-10d  %-5s  %-8s  %s\n",
-			ctgToString(c.CTG), c.CNO, c.Offset, c.Size,
+			mm.CTGToString(c.CTG), c.CNO, c.Offset, c.Size,
 			flagsString(c), kids, c.Name)
 	}
 	if len(cf.Chunks) != len(chunks) {
@@ -155,11 +156,11 @@ func listChunks(cf *ChunkyFile, chunks []Chunk, showKids bool) {
 }
 
 // kidsString returns a compact summary of child chunk types, e.g. "BMDL×4 MTRL×8".
-func kidsString(kids []KID) string {
+func kidsString(kids []mm.KID) string {
 	counts := make(map[string]int)
 	order := []string{}
 	for _, k := range kids {
-		tag := ctgToString(k.CTG)
+		tag := mm.CTGToString(k.CTG)
 		if counts[tag] == 0 {
 			order = append(order, tag)
 		}
@@ -180,7 +181,7 @@ func kidsString(kids []KID) string {
 }
 
 // flagsString returns the compact flag characters for a chunk.
-func flagsString(c Chunk) string {
+func flagsString(c mm.Chunk) string {
 	var b strings.Builder
 	if c.IsPacked() {
 		b.WriteByte('P')
@@ -197,20 +198,20 @@ func flagsString(c Chunk) string {
 // extractChunks writes each chunk's data to outDir/<CTG>_<CNO>.bin and writes
 // a manifest.json summarising all chunks. Packed chunks are decompressed unless
 // raw is true. Chunks with FcrpOnExtra are skipped.
-func extractChunks(r io.ReaderAt, cf *ChunkyFile, sourcePath string, chunks []Chunk, outDir string, verbose, raw bool) error {
+func extractChunks(r io.ReaderAt, cf *mm.ChunkyFile, sourcePath string, chunks []mm.Chunk, outDir string, verbose, raw bool) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("creating output directory %s: %w", outDir, err)
 	}
 
 	var extracted, skipped int
-	var manifestChunks []ManifestChunk
+	var manifestChunks []mm.ManifestChunk
 
 	for _, c := range chunks {
-		tag := ctgToString(c.CTG)
+		tag := mm.CTGToString(c.CTG)
 		if c.IsOnExtra() {
 			fmt.Fprintf(os.Stderr, "skip %s/0x%08X: data is on companion file (fcrpOnExtra)\n", tag, c.CNO)
 			skipped++
-			manifestChunks = append(manifestChunks, buildManifestChunk(c, nil, nil, nil))
+			manifestChunks = append(manifestChunks, mm.BuildManifestChunk(c, nil, nil, nil))
 			continue
 		}
 
@@ -230,14 +231,14 @@ func extractChunks(r io.ReaderAt, cf *ChunkyFile, sourcePath string, chunks []Ch
 				data = rawBytes
 				compressed = c.IsPacked()
 				if c.IsPacked() {
-					sizeUnpacked = peekUnpackedSize(rawBytes)
+					sizeUnpacked = mm.PeekUnpackedSize(rawBytes)
 				} else {
 					sizeUnpacked = c.Size
 				}
 			} else {
 				if c.IsPacked() {
 					var err error
-					data, err = DecodeKauaiChunk(rawBytes)
+					data, err = mm.DecodeKauaiChunk(rawBytes)
 					if err != nil {
 						return fmt.Errorf("decompressing %s/0x%08X: %w", tag, c.CNO, err)
 					}
@@ -274,7 +275,7 @@ func extractChunks(r io.ReaderAt, cf *ChunkyFile, sourcePath string, chunks []Ch
 
 		su := sizeUnpacked
 		co := compressed
-		manifestChunks = append(manifestChunks, buildManifestChunk(c, &name, &co, &su))
+		manifestChunks = append(manifestChunks, mm.BuildManifestChunk(c, &name, &co, &su))
 	}
 
 	fmt.Printf("extracted %d chunks to %s", extracted, outDir)
@@ -283,16 +284,16 @@ func extractChunks(r io.ReaderAt, cf *ChunkyFile, sourcePath string, chunks []Ch
 	}
 	fmt.Println()
 
-	m := &Manifest{
+	m := &mm.Manifest{
 		SourceFile:   filepath.Base(sourcePath),
-		Creator:      ctgToString(cf.Creator),
+		Creator:      mm.CTGToString(cf.Creator),
 		VerCur:       cf.VerCur,
 		VerBack:      cf.VerBack,
-		CRPFormat:    crpFormatString(cf.CRPFormat),
+		CRPFormat:    mm.CRPFormatString(cf.CRPFormat),
 		ExtractedRaw: raw,
 		Chunks:       manifestChunks,
 	}
-	if err := writeManifest(outDir, m); err != nil {
+	if err := mm.WriteManifest(outDir, m); err != nil {
 		return err
 	}
 	fmt.Printf("wrote manifest.json to %s\n", outDir)
@@ -300,7 +301,7 @@ func extractChunks(r io.ReaderAt, cf *ChunkyFile, sourcePath string, chunks []Ch
 }
 
 // parseCTGString converts a user-supplied 4-char string (e.g. "MVIE") to the
-// uint32 value that ParseChunkyFile stores in Chunk.CTG.
+// uint32 value that mm.ParseChunkyFile stores in Chunk.CTG.
 func parseCTGString(s string) uint32 {
 	b := [4]byte{' ', ' ', ' ', ' '}
 	for i := 0; i < 4 && i < len(s); i++ {
@@ -355,7 +356,7 @@ func mbmpAction(c *cli.Context) error {
 			return fmt.Errorf("open %s: %w", path, err)
 		}
 
-		img, err := ReadMBMP(f)
+		img, err := mm.ReadMBMP(f)
 		f.Close()
 		if err != nil {
 			return err
@@ -371,7 +372,7 @@ func mbmpAction(c *cli.Context) error {
 		out := image.NewNRGBA(bounds)
 		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				mc := img.At(x, y).(MBMPColor)
+				mc := img.At(x, y).(mm.MBMPColor)
 				if pal != nil {
 					pc := pal[mc.Index]
 					out.SetNRGBA(x, y, color.NRGBA{R: pc.R, G: pc.G, B: pc.B, A: mc.A})
@@ -456,22 +457,22 @@ func bkgdAction(c *cli.Context) error {
 	}
 	defer f.Close()
 
-	cf, err := ParseChunkyFile(f)
+	cf, err := mm.ParseChunkyFile(f)
 	if err != nil {
 		return err
 	}
 
 	cnoVal := c.Int("cno")
-	var bkgdChunk Chunk
+	var bkgdChunk mm.Chunk
 	var found bool
 	if cnoVal >= 0 {
-		bkgdChunk, found = cf.FindChunk(ctgBKGD, uint32(cnoVal))
+		bkgdChunk, found = cf.FindChunk(mm.TagBKGD, uint32(cnoVal))
 		if !found {
 			return fmt.Errorf("BKGD chunk with CNO 0x%08X not found", uint32(cnoVal))
 		}
 	} else {
 		for _, ch := range cf.Chunks {
-			if ch.CTG == ctgBKGD {
+			if ch.CTG == mm.TagBKGD {
 				bkgdChunk = ch
 				found = true
 				break
@@ -482,16 +483,16 @@ func bkgdAction(c *cli.Context) error {
 		}
 	}
 
-	base, glcrFound, err := FindGLCR(cf, f)
+	base, glcrFound, err := mm.FindGLCR(cf, f)
 	if err != nil {
 		return fmt.Errorf("loading GLCR palette: %w", err)
 	}
 	if !glcrFound {
 		fmt.Fprintln(os.Stderr, "notice: no GLCR palette chunk found; rendering in grayscale")
-		base = GrayscalePalette()
+		base = mm.GrayscalePalette()
 	}
 
-	scene, err := LoadBackgroundScene(f, cf, bkgdChunk.CTG, bkgdChunk.CNO, base)
+	scene, err := mm.LoadBackgroundScene(f, cf, bkgdChunk.CTG, bkgdChunk.CNO, base)
 	if err != nil {
 		return err
 	}
@@ -532,7 +533,7 @@ func bkgdAction(c *cli.Context) error {
 			out = image.NewNRGBA(bounds)
 			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 				for x := bounds.Min.X; x < bounds.Max.X; x++ {
-					mc := angle.Img.At(x, y).(MBMPColor)
+					mc := angle.Img.At(x, y).(mm.MBMPColor)
 					pc := scene.Palette.Colors[mc.Index]
 					r, g, b, _ := pc.RGBA()
 					out.SetNRGBA(x, y, color.NRGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: mc.A})
@@ -572,7 +573,7 @@ func genpaletteAction(c *cli.Context) error {
 	src := loadImage(c.Args().Get(0))
 	cmp := loadImage(c.Args().Get(1))
 
-	palette, err := GenPalette(src, cmp)
+	palette, err := mm.GenPalette(src, cmp)
 	if err != nil {
 		return fmt.Errorf("genpalette: %w", err)
 	}
@@ -644,7 +645,7 @@ func dagAction(c *cli.Context) error {
 	}
 	defer f.Close()
 
-	cf, err := ParseChunkyFile(f)
+	cf, err := mm.ParseChunkyFile(f)
 	if err != nil {
 		return err
 	}
@@ -665,6 +666,6 @@ func dagAction(c *cli.Context) error {
 		w = df
 	}
 
-	ChunkDAG(cf, w)
+	mm.ChunkDAG(cf, w)
 	return nil
 }

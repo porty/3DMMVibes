@@ -1,4 +1,4 @@
-package main
+package mm
 
 import (
 	"bytes"
@@ -9,22 +9,13 @@ import (
 	"io"
 )
 
-// Chunk type tags for BKGD-related chunks.
-const (
-	ctgBKGD = uint32('B')<<24 | uint32('K')<<16 | uint32('G')<<8 | uint32('D')
-	ctgCAM  = uint32('C')<<24 | uint32('A')<<16 | uint32('M')<<8 | uint32(' ')
-	ctgMBMP = uint32('M')<<24 | uint32('B')<<16 | uint32('M')<<8 | uint32('P')
-	ctgGLCR = uint32('G')<<24 | uint32('L')<<16 | uint32('C')<<8 | uint32('R')
-	ctgZBMP = uint32('Z')<<24 | uint32('B')<<16 | uint32('M')<<8 | uint32('P')
-)
-
 // ZBMPImage is a decoded ZBMP (Z-buffer) chunk.
 //
 // Pixels are stored in bounding-rect space with stride = Rect.Dx().
 // Index i = (y-Rect.Min.Y)*Rect.Dx() + (x-Rect.Min.X).
 // Values are 16-bit z-depths: 0x0000 = closest, 0xFFFF = farthest (cleared).
 type ZBMPImage struct {
-	Pix  []uint16       // z-values, row-major
+	Pix  []uint16 // z-values, row-major
 	Rect image.Rectangle
 }
 
@@ -98,7 +89,7 @@ func FindGLCR(cf *ChunkyFile, r io.ReaderAt) (Palette, bool, error) {
 	// Collect all top-level GLCR chunks.
 	var glcrChunks []Chunk
 	for _, c := range cf.Chunks {
-		if c.CTG == ctgGLCR {
+		if c.CTG == TagGLCR {
 			glcrChunks = append(glcrChunks, c)
 		}
 	}
@@ -161,7 +152,7 @@ func FindGLCR(cf *ChunkyFile, r io.ReaderAt) (Palette, bool, error) {
 func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32, base Palette) (*BackgroundScene, error) {
 	bkgdChunk, ok := cf.FindChunk(bkgdCTG, bkgdCNO)
 	if !ok {
-		return nil, fmt.Errorf("bkgd: chunk %s/0x%08X not found", ctgToString(bkgdCTG), bkgdCNO)
+		return nil, fmt.Errorf("bkgd: chunk %s/0x%08X not found", CTGToString(bkgdCTG), bkgdCNO)
 	}
 
 	// Read and parse the BKGDF on-disk header.
@@ -186,7 +177,7 @@ func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32,
 
 	// Load the GLCR child (custom palette), if present.
 	scenePalette := base
-	if glcrChunk, ok := cf.FindChildByChidCTG(bkgdChunk, 0, ctgGLCR); ok {
+	if glcrChunk, ok := cf.FindChildByChidCTG(bkgdChunk, 0, TagGLCR); ok {
 		glcrData, err := ChunkData(r, glcrChunk)
 		if err != nil {
 			return nil, fmt.Errorf("bkgd: reading GLCR: %w", err)
@@ -201,11 +192,11 @@ func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32,
 	// Load each CAM child (chid 0, 1, 2, ...) and its MBMP grandchild.
 	var angles []CameraAngle
 	for chid := uint32(0); ; chid++ {
-		camChunk, ok := cf.FindChildByChidCTG(bkgdChunk, chid, ctgCAM)
+		camChunk, ok := cf.FindChildByChidCTG(bkgdChunk, chid, TagCAM)
 		if !ok {
 			break
 		}
-		mbmpChunk, ok := cf.FindChildByChidCTG(camChunk, 0, ctgMBMP)
+		mbmpChunk, ok := cf.FindChildByChidCTG(camChunk, 0, TagMBMP)
 		if !ok {
 			return nil, fmt.Errorf("bkgd: CAM %d has no MBMP child", chid)
 		}
@@ -220,7 +211,7 @@ func LoadBackgroundScene(r io.ReaderAt, cf *ChunkyFile, bkgdCTG, bkgdCNO uint32,
 
 		// Load the optional ZBMP z-buffer child (same CHID 0, different CTG).
 		var zbuf *ZBMPImage
-		if zbmpChunk, ok := cf.FindChildByChidCTG(camChunk, 0, ctgZBMP); ok {
+		if zbmpChunk, ok := cf.FindChildByChidCTG(camChunk, 0, TagZBMP); ok {
 			zbmpData, err := ChunkData(r, zbmpChunk)
 			if err != nil {
 				return nil, fmt.Errorf("bkgd: reading ZBMP for CAM %d: %w", chid, err)

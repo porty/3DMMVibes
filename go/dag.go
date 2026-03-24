@@ -1,4 +1,4 @@
-package main
+package mm
 
 import (
 	"fmt"
@@ -26,7 +26,10 @@ func ChunkDAG(cf *ChunkyFile, w io.Writer) {
 	// Emit nodes.
 	for _, c := range cf.Chunks {
 		id := nodeID(c.CTG, c.CNO)
-		label := fmt.Sprintf("%s\\n0x%08X\\n%d bytes", ctgToString(c.CTG), c.CNO, c.Size)
+		label := fmt.Sprintf("%s\\n0x%08X\\n%d bytes", CTGToString(c.CTG), c.CNO, c.Size)
+		if c.Name != "" {
+			label += "\\n" + c.Name
+		}
 		if !hasParent[chunkKey(c.CTG, c.CNO)] {
 			fmt.Fprintf(w, "\t%s [label=\"%s\" shape=box style=filled fillcolor=lightblue]\n", id, label)
 		} else {
@@ -57,5 +60,5 @@ func chunkKey(ctg, cno uint32) uint64 {
 
 // nodeID returns the quoted DOT node identifier for a (CTG, CNO) pair.
 func nodeID(ctg, cno uint32) string {
-	return fmt.Sprintf("%q", fmt.Sprintf("%s/0x%08X", ctgToString(ctg), cno))
+	return fmt.Sprintf("%q", fmt.Sprintf("%s/0x%08X", CTGToString(ctg), cno))
 }
