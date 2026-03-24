@@ -12,12 +12,12 @@ func main() {
 		Name:  "3dmm",
 		Usage: "Tools for working with 3D Movie Maker files",
 		Commands: []*cli.Command{
-			chunkyCommand(),
-			mbmpCommand(),
-			bkgdCommand(),
-			dagCommand(),
-			renderCommand(),
 			actorCommand(),
+			bkgdCommand(),
+			chunkyCommand(),
+			dagCommand(),
+			mbmpCommand(),
+			renderCommand(),
 		},
 	}
 	if err := app.Run(os.Args); err != nil {
