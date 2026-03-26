@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -354,7 +355,7 @@ func renderPNGAction(c *cli.Context) error {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	return RenderMovie(c.String("outdir"), c.Int("scene"), c.String("bkgddir"), cf, f)
+	return RenderMovie(c.String("outdir"), c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
 }
 
 func renderRGB24Action(c *cli.Context) error {
@@ -387,7 +388,7 @@ func renderRGB24Action(c *cli.Context) error {
 		defer out.Close()
 	}
 
-	return RenderMovieRGB24(out, c.Int("scene"), c.String("bkgddir"), cf, f)
+	return RenderMovieRGB24(out, c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
 }
 
 func renderFFmpegAction(c *cli.Context) error {
@@ -432,7 +433,7 @@ func renderFFmpegAction(c *cli.Context) error {
 		return fmt.Errorf("starting ffmpeg: %w", err)
 	}
 
-	renderErr := RenderMovieRGB24(stdin, c.Int("scene"), c.String("bkgddir"), cf, f)
+	renderErr := RenderMovieRGB24(stdin, c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
 	stdin.Close()
 	cmdErr := cmd.Wait()
 
@@ -443,7 +444,7 @@ func renderFFmpegAction(c *cli.Context) error {
 }
 
 // RenderMovie renders all (or one) scene from cf to outDir.
-func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile, r io.ReaderAt) error {
+func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile, r io.ReaderAt, logger *log.Logger) error {
 	movie, err := LoadMovie(cf, r)
 	if err != nil {
 		return err
@@ -472,13 +473,13 @@ func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile,
 		}
 		bkgdCF, bkgdFile, bkgdChunk, err := FindBKGDInDir(bkgdDir, tag.CNO)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: loading BKGD 0x%08X: %v\n", tag.CNO, err)
+			logger.Printf("warning: loading BKGD 0x%08X: %v", tag.CNO, err)
 			return nil
 		}
 		basePal, _, _ := FindGLCR(bkgdCF, bkgdFile)
 		scene, err := LoadBackgroundScene(bkgdFile, bkgdCF, bkgdChunk.CTG, bkgdChunk.CNO, basePal)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: decoding BKGD 0x%08X: %v\n", tag.CNO, err)
+			logger.Printf("warning: decoding BKGD 0x%08X: %v", tag.CNO, err)
 			bkgdFile.Close()
 			return nil
 		}
@@ -493,15 +494,15 @@ func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile,
 		}
 		scenChunk, ok := cf.FindChunk(ctgSCEN, sr.CNO)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "warning: scene %d (CNO 0x%08X) chunk not found, skipping\n", i, sr.CNO)
+			logger.Printf("warning: scene %d (CNO 0x%08X) chunk not found, skipping", i, sr.CNO)
 			continue
 		}
 		sd, err := ParseScene(cf, r, scenChunk)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: scene %d: %v, skipping\n", i, err)
+			logger.Printf("warning: scene %d: %v, skipping", i, err)
 			continue
 		}
-		if err := renderScene(outDir, i, sd, cf, r, openBKGD); err != nil {
+		if err := renderScene(outDir, i, sd, cf, r, openBKGD, logger); err != nil {
 			return fmt.Errorf("scene %d: %w", i, err)
 		}
 	}
@@ -516,6 +517,7 @@ func renderScene(
 	cf *ChunkyFile,
 	r io.ReaderAt,
 	openBKGD func(ChunkTAG) *bkgdCache,
+	logger *log.Logger,
 ) error {
 	currentCam := 0
 	var currentBkgd *bkgdCache
@@ -545,7 +547,7 @@ func renderScene(
 	for _, cno := range sd.ActorCNOs {
 		a, err := LoadActor(cf, r, cno)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: scene %d: %v\n", sceneIdx, err)
+			logger.Printf("warning: scene %d: %v", sceneIdx, err)
 			continue
 		}
 		actors = append(actors, a)
@@ -553,11 +555,11 @@ func renderScene(
 
 	nfrmFirst, nfrmLast := sd.NfrmFirst, sd.NfrmLast
 	if nfrmFirst > nfrmLast {
-		fmt.Fprintf(os.Stderr, "warning: scene %d: empty frame range [%d, %d]\n", sceneIdx, nfrmFirst, nfrmLast)
+		logger.Printf("warning: scene %d: empty frame range [%d, %d]", sceneIdx, nfrmFirst, nfrmLast)
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "scene %d: frames %d..%d  actors: %d\n", sceneIdx, nfrmFirst, nfrmLast, len(actors))
+	logger.Printf("scene %d: frames %d..%d  actors: %d", sceneIdx, nfrmFirst, nfrmLast, len(actors))
 
 	audioCues := collectAudioCues(actors)
 
@@ -594,7 +596,7 @@ func renderScene(
 			// cam = defaultCamParams(640, 480)
 			cam = defaultCamParams(DefaultWidth, DefaultHeight)
 			if currentBkgd != nil {
-				fmt.Fprintf(os.Stderr, "warning: scene %d frame %d: camera %d out of range (%d angles)\n",
+				logger.Printf("warning: scene %d frame %d: camera %d out of range (%d angles)",
 					sceneIdx, nfrm, currentCam, len(currentBkgd.scene.Angles))
 			}
 		}
@@ -629,7 +631,7 @@ func renderScene(
 
 // RenderMovieRGB24 renders all (or one) scene from cf and writes raw RGB24
 // frames to w. Each frame is width×height×3 bytes (R, G, B per pixel, row-major).
-func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFile, r io.ReaderAt) error {
+func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFile, r io.ReaderAt, logger *log.Logger) error {
 	movie, err := LoadMovie(cf, r)
 	if err != nil {
 		return err
@@ -654,13 +656,13 @@ func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFi
 		}
 		bkgdCF, bkgdFile, bkgdChunk, err := FindBKGDInDir(bkgdDir, tag.CNO)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: loading BKGD 0x%08X: %v\n", tag.CNO, err)
+			logger.Printf("warning: loading BKGD 0x%08X: %v", tag.CNO, err)
 			return nil
 		}
 		basePal, _, _ := FindGLCR(bkgdCF, bkgdFile)
 		scene, err := LoadBackgroundScene(bkgdFile, bkgdCF, bkgdChunk.CTG, bkgdChunk.CNO, basePal)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: decoding BKGD 0x%08X: %v\n", tag.CNO, err)
+			logger.Printf("warning: decoding BKGD 0x%08X: %v", tag.CNO, err)
 			bkgdFile.Close()
 			return nil
 		}
@@ -676,15 +678,15 @@ func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFi
 		}
 		scenChunk, ok := cf.FindChunk(ctgSCEN, sr.CNO)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "warning: scene %d (CNO 0x%08X) chunk not found, skipping\n", i, sr.CNO)
+			logger.Printf("warning: scene %d (CNO 0x%08X) chunk not found, skipping", i, sr.CNO)
 			continue
 		}
 		sd, err := ParseScene(cf, r, scenChunk)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: scene %d: %v, skipping\n", i, err)
+			logger.Printf("warning: scene %d: %v, skipping", i, err)
 			continue
 		}
-		if err := renderSceneRGB24(bw, i, sd, cf, r, openBKGD); err != nil {
+		if err := renderSceneRGB24(bw, i, sd, cf, r, openBKGD, logger); err != nil {
 			return fmt.Errorf("scene %d: %w", i, err)
 		}
 	}
@@ -699,6 +701,7 @@ func renderSceneRGB24(
 	cf *ChunkyFile,
 	r io.ReaderAt,
 	openBKGD func(ChunkTAG) *bkgdCache,
+	logger *log.Logger,
 ) error {
 	currentCam := 0
 	var currentBkgd *bkgdCache
@@ -726,7 +729,7 @@ func renderSceneRGB24(
 	for _, cno := range sd.ActorCNOs {
 		a, err := LoadActor(cf, r, cno)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: scene %d: %v\n", sceneIdx, err)
+			logger.Printf("warning: scene %d: %v", sceneIdx, err)
 			continue
 		}
 		actors = append(actors, a)
@@ -737,7 +740,7 @@ func renderSceneRGB24(
 		return nil
 	}
 
-	fmt.Fprintf(os.Stderr, "scene %d: frames %d..%d  actors: %d\n", sceneIdx, nfrmFirst, nfrmLast, len(actors))
+	logger.Printf("scene %d: frames %d..%d  actors: %d", sceneIdx, nfrmFirst, nfrmLast, len(actors))
 
 	audioCues := collectAudioCues(actors)
 
@@ -769,7 +772,7 @@ func renderSceneRGB24(
 			frame = blankFrame()
 			cam = defaultCamParams(DefaultWidth, DefaultHeight)
 			if currentBkgd != nil {
-				fmt.Fprintf(os.Stderr, "warning: scene %d frame %d: camera %d out of range (%d angles)\n",
+				logger.Printf("warning: scene %d frame %d: camera %d out of range (%d angles)",
 					sceneIdx, nfrm, currentCam, len(currentBkgd.scene.Angles))
 			}
 		}

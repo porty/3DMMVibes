@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"testing"
 )
@@ -35,7 +36,7 @@ func BenchmarkRenderMovieRGB24(b *testing.B) {
 		if _, err := r.Seek(0, io.SeekStart); err != nil {
 			b.Fatalf("seek: %v", err)
 		}
-		if err := RenderMovieRGB24(io.Discard, -1, "", cf, r); err != nil {
+		if err := RenderMovieRGB24(io.Discard, -1, "", cf, r, log.New(io.Discard, "", 0)); err != nil {
 			b.Fatalf("RenderMovieRGB24: %v", err)
 		}
 	}

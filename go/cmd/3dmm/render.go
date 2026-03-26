@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 
@@ -88,7 +89,7 @@ func renderPNGAction(c *cli.Context) error {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	return mm.RenderMovie(c.String("outdir"), c.Int("scene"), c.String("bkgddir"), cf, f)
+	return mm.RenderMovie(c.String("outdir"), c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
 }
 
 func renderRGB24Action(c *cli.Context) error {
@@ -121,7 +122,7 @@ func renderRGB24Action(c *cli.Context) error {
 		defer out.Close()
 	}
 
-	return mm.RenderMovieRGB24(out, c.Int("scene"), c.String("bkgddir"), cf, f)
+	return mm.RenderMovieRGB24(out, c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
 }
 
 func renderFFmpegAction(c *cli.Context) error {
@@ -166,7 +167,7 @@ func renderFFmpegAction(c *cli.Context) error {
 		return fmt.Errorf("starting ffmpeg: %w", err)
 	}
 
-	renderErr := mm.RenderMovieRGB24(stdin, c.Int("scene"), c.String("bkgddir"), cf, f)
+	renderErr := mm.RenderMovieRGB24(stdin, c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
 	stdin.Close()
 	cmdErr := cmd.Wait()
 
