@@ -88,11 +88,6 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 			continue
 		}
 
-		var mat BMAT34
-		if cps.IMat34 >= 0 && cps.IMat34 < len(ad.Transforms) {
-			mat = ad.Transforms[cps.IMat34]
-		}
-
 		ibset := 0
 		if partIdx < len(tmpl.IBSets) {
 			ibset = tmpl.IBSets[partIdx]
@@ -100,7 +95,24 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 
 		worldVerts := make([]Vec3, len(model.Verts))
 		for vi, bv := range model.Verts {
-			worldVerts[vi] = applyBMAT34(bv.Pos, mat)
+			// Walk up the body-part hierarchy, applying each local-to-parent
+			// transform in order (innermost part first, up to the root part).
+			// Each BMAT34 in GLXF is relative to the parent body part's space,
+			// so we must compose all ancestors' transforms to get world space.
+			pos := bv.Pos
+			cur := partIdx
+			for cur >= 0 && cur < len(cel.Parts) {
+				imat := cel.Parts[cur].IMat34
+				if imat >= 0 && imat < len(ad.Transforms) {
+					pos = applyBMAT34(pos, ad.Transforms[imat])
+				}
+				if cur < len(tmpl.ParentParts) {
+					cur = tmpl.ParentParts[cur]
+				} else {
+					cur = -1
+				}
+			}
+			worldVerts[vi] = pos
 		}
 
 		for _, face := range model.Faces {

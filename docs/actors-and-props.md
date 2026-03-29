@@ -91,7 +91,7 @@ Each `TMPL` chunk's children provide its complete 3D definition. Typical child c
 | `CMTL` | Custom material (costume) | 1–20 |
 | `GGCM` | GOK command group (UI scripting) | 1 |
 | `GLBS` | Body-part set list (GL of `ibset` shorts) | 1 |
-| `GLPI` | Global palette / part info | 1 |
+| `GLPI` | Body-part parent hierarchy (GL of parent-index shorts; root parts store `ivNil` = −1) | 1 |
 
 The `CHID` of each `BMDL` child is the `chidModl` referenced from `CPS` records in the action cels.
 

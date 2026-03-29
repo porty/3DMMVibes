@@ -40,6 +40,10 @@ type LoadedTemplate struct {
 	IBSets []int
 	// NumBodyParts is derived from GLBS length.
 	NumBodyParts int
+	// ParentParts is the body-part parent hierarchy from GLPI.
+	// ParentParts[i] is the index of body part i's parent, or -1 if it is a
+	// root part (its parent is the body's root actor, which has identity transform).
+	ParentParts []int
 }
 
 // LoadTemplate reads a TMPL chunk (by CNO) from cf and parses its full subtree.
@@ -84,6 +88,27 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 		}
 		lt.IBSets = ibsets
 		lt.NumBodyParts = len(ibsets)
+		break
+	}
+
+	// Load GLPI for body-part parent hierarchy.
+	for _, kid := range tmplChunk.Kids {
+		if kid.CTG != TagGLPI {
+			continue
+		}
+		glpiChunk, ok := cf.FindChunk(kid.CTG, kid.CNO)
+		if !ok {
+			continue
+		}
+		data, err := ChunkData(r, glpiChunk)
+		if err != nil {
+			return nil, fmt.Errorf("reading GLPI: %w", err)
+		}
+		parents, err := parseGLInt16(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing GLPI: %w", err)
+		}
+		lt.ParentParts = parents
 		break
 	}
 
