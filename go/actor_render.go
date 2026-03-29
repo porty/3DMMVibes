@@ -28,6 +28,17 @@ type RenderParams struct {
 	Height     int
 	ActionCHID uint32
 	CelIdx     int
+	YawDeg     float64 // Y-axis rotation of actor in degrees (0 = default view)
+}
+
+// ActorPalette returns the color palette used for actor template rendering:
+// black background plus one color per body-part-set index.
+func ActorPalette() color.Palette {
+	p := color.Palette{color.NRGBA{R: 0, G: 0, B: 0, A: 255}}
+	for _, c := range ibsetColors {
+		p = append(p, c)
+	}
+	return p
 }
 
 // worldTriangle is one projected triangle ready for rasterization.
@@ -127,6 +138,20 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 	diag := math.Sqrt((maxX-minX)*(maxX-minX) + (maxY-minY)*(maxY-minY) + (maxZ-minZ)*(maxZ-minZ))
 	if diag == 0 {
 		diag = 1
+	}
+
+	// Apply Y-axis rotation around the bounding-box center before projecting.
+	if p.YawDeg != 0 {
+		theta := p.YawDeg * math.Pi / 180.0
+		cosT, sinT := math.Cos(theta), math.Sin(theta)
+		for i := range allTris {
+			for j := range allTris[i].world {
+				wx := allTris[i].world[j].X - cx
+				wz := allTris[i].world[j].Z - cz
+				allTris[i].world[j].X = wx*cosT - wz*sinT + cx
+				allTris[i].world[j].Z = wx*sinT + wz*cosT + cz
+			}
+		}
 	}
 
 	dist := diag * 2.0

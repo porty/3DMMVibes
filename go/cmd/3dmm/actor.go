@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"image/gif"
 	"image/png"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -190,13 +193,19 @@ func actorRenderCommand() *cli.Command {
 				Name:  "cno",
 				Usage: `CNO of the TMPL chunk (hex, e.g. 0x2010), or "all"`,
 			},
-			&cli.StringFlag{Name: "o", Usage: "Output PNG file (default: stdout)"},
-			&cli.BoolFlag{Name: "t", Usage: "Display the image in the terminal"},
+			&cli.StringFlag{Name: "o", Usage: `Output file (png) or directory (gif --cno all); default: stdout`},
+			&cli.BoolFlag{Name: "t", Usage: "Display the image in the terminal (png only)"},
 			&cli.IntFlag{Name: "width", Value: 512, Usage: "Output image width in pixels"},
 			&cli.IntFlag{Name: "height", Value: 512, Usage: "Output image height in pixels"},
 			&cli.IntFlag{Name: "actn", Value: 0, Usage: "Action CHID to render"},
 			&cli.IntFlag{Name: "cel", Value: 0, Usage: "Cel index within the action"},
-			&cli.IntFlag{Name: "cols", Value: 8, Usage: "Number of columns when rendering --cno all"},
+			&cli.IntFlag{Name: "cols", Value: 8, Usage: "Number of columns when rendering --cno all (png only)"},
+			&cli.StringFlag{
+				Name:    "format",
+				Aliases: []string{"f"},
+				Value:   "png",
+				Usage:   `Output format: "png" or "gif"`,
+			},
 		},
 		Action: actorRenderAction,
 	}
@@ -207,6 +216,11 @@ func actorRenderAction(c *cli.Context) error {
 	if cnoStr == "" {
 		_ = cli.ShowSubcommandHelp(c)
 		return cli.Exit("--cno is required", 1)
+	}
+
+	format := c.String("format")
+	if format != "png" && format != "gif" {
+		return cli.Exit(`--format must be "png" or "gif"`, 1)
 	}
 
 	p := mm.RenderParams{
@@ -274,6 +288,59 @@ func actorRenderAction(c *cli.Context) error {
 		return nil
 	}
 
+	// GIF output: rotate the actor 360° over 48 frames at ~12fps.
+	if format == "gif" {
+		if len(cnos) == 1 {
+			g, err := renderActorGIF(cf, f, cnos[0], p)
+			if err != nil {
+				return err
+			}
+			var w io.Writer = os.Stdout
+			if outPath != "" {
+				wf, err := os.Create(outPath)
+				if err != nil {
+					return fmt.Errorf("create %s: %w", outPath, err)
+				}
+				defer wf.Close()
+				w = wf
+			}
+			return gif.EncodeAll(w, g)
+		}
+		// Multiple CNOs: write one GIF per actor to a directory.
+		outDir := outPath
+		if outDir == "" {
+			outDir = "."
+		}
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return fmt.Errorf("create output dir: %w", err)
+		}
+		for _, cno := range cnos {
+			name := fmt.Sprintf("TMPL_0x%08X.gif", cno)
+			for _, chunk := range cf.Chunks {
+				if chunk.CTG == mm.TagTMPL && chunk.CNO == cno && chunk.Name != "" {
+					name = chunk.Name + ".gif"
+					break
+				}
+			}
+			g, err := renderActorGIF(cf, f, cno, p)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "skip TMPL/0x%08X: %v\n", cno, err)
+				continue
+			}
+			outFile := filepath.Join(outDir, name)
+			wf, err := os.Create(outFile)
+			if err != nil {
+				return fmt.Errorf("create %s: %w", outFile, err)
+			}
+			if err := gif.EncodeAll(wf, g); err != nil {
+				wf.Close()
+				return fmt.Errorf("encode GIF %s: %w", outFile, err)
+			}
+			wf.Close()
+		}
+		return nil
+	}
+
 	// PNG output: render all, crop, then arrange in grid or column.
 	var imgs []*image.NRGBA
 	for _, cno := range cnos {
@@ -307,6 +374,31 @@ func actorRenderAction(c *cli.Context) error {
 		defer w.Close()
 	}
 	return png.Encode(w, out)
+}
+
+// renderActorGIF renders an actor template rotating 360° over 48 frames at ~12fps.
+// Each frame uses the full p.Width × p.Height canvas (no cropping) so the canvas
+// size is stable across all frames.
+func renderActorGIF(cf *mm.ChunkyFile, r *os.File, cno uint32, p mm.RenderParams) (*gif.GIF, error) {
+	const nFrames = 48
+	const gifDelay = 8 // centiseconds ≈ 12.5fps (closest integer to 100/12)
+
+	palette := mm.ActorPalette()
+	var g gif.GIF
+	g.LoopCount = 0 // loop forever
+
+	for i := range nFrames {
+		p.YawDeg = float64(i) * 360.0 / nFrames
+		img, err := mm.RenderTemplate(cf, r, cno, p)
+		if err != nil {
+			return nil, fmt.Errorf("render frame %d: %w", i, err)
+		}
+		palImg := image.NewPaletted(img.Bounds(), palette)
+		draw.Draw(palImg, img.Bounds(), img, image.Point{}, draw.Src)
+		g.Image = append(g.Image, palImg)
+		g.Delay = append(g.Delay, gifDelay)
+	}
+	return &g, nil
 }
 
 // cropToContent crops an NRGBA image to the bounding box of non-black pixels,
