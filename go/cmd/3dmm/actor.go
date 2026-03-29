@@ -187,11 +187,12 @@ func actorRenderCommand() *cli.Command {
 		Description: "Renders one cel of an actor template as a flat-shaded PNG.\n" +
 			"Body parts are colored by their body-part-set index (ibset).\n" +
 			"Use --cno all to render every TMPL in the file.\n" +
+			"--cno accepts a hex CNO (0x2010), an actor name (\"Keesha\"), or \"all\".\n" +
 			"Character actor CNOs: 0x2010–0x203C in TMPLS.3CN.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "cno",
-				Usage: `CNO of the TMPL chunk (hex, e.g. 0x2010), or "all"`,
+				Usage: `CNO of the TMPL chunk (hex, e.g. 0x2010), actor name (e.g. "Keesha"), or "all"`,
 			},
 			&cli.StringFlag{Name: "o", Usage: `Output file (png) or directory (gif --cno all); default: stdout`},
 			&cli.BoolFlag{Name: "t", Usage: "Display the image in the terminal (png only)"},
@@ -263,10 +264,22 @@ func actorRenderAction(c *cli.Context) error {
 		var cno uint32
 		if _, err := fmt.Sscanf(cnoStr, "0x%x", &cno); err != nil {
 			if _, err2 := fmt.Sscanf(cnoStr, "%x", &cno); err2 != nil {
-				return fmt.Errorf("invalid --cno %q: expected hex like 0x2010 or \"all\"", cnoStr)
+				// Try matching by name.
+				nameLower := strings.ToLower(cnoStr)
+				for _, chunk := range cf.Chunks {
+					if chunk.CTG == mm.TagTMPL && strings.ToLower(chunk.Name) == nameLower {
+						cnos = append(cnos, chunk.CNO)
+					}
+				}
+				if len(cnos) == 0 {
+					return fmt.Errorf("no TMPL found with name %q", cnoStr)
+				}
+			} else {
+				cnos = []uint32{cno}
 			}
+		} else {
+			cnos = []uint32{cno}
 		}
-		cnos = []uint32{cno}
 	}
 
 	// Render each CNO.
