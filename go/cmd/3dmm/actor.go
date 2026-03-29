@@ -32,20 +32,20 @@ func actorListCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "list",
 		Usage:     "List all TMPL chunks and their actions",
-		ArgsUsage: "<TMPLS.3CN>",
+		ArgsUsage: "[TMPLS.3CN]",
 		Action:    actorListAction,
 	}
 }
 
 func actorListAction(c *cli.Context) error {
-	if c.NArg() < 1 {
-		_ = cli.ShowSubcommandHelp(c)
-		return cli.Exit("", 1)
+	path := c.Args().First()
+	if path == "" {
+		path = "TMPLS.3CN"
 	}
 
-	f, err := os.Open(c.Args().First())
+	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", c.Args().First(), err)
+		return fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
@@ -176,7 +176,7 @@ func actorRenderCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "render",
 		Usage:     "Render an actor template as a flat-shaded PNG",
-		ArgsUsage: "<TMPLS.3CN>",
+		ArgsUsage: "[TMPLS.3CN]",
 		Description: "Renders one cel of an actor template as a flat-shaded PNG.\n" +
 			"Body parts are colored by their body-part-set index (ibset).\n" +
 			"Use --cno all to render every TMPL in the file.\n" +
@@ -199,11 +199,6 @@ func actorRenderCommand() *cli.Command {
 }
 
 func actorRenderAction(c *cli.Context) error {
-	if c.NArg() < 1 {
-		_ = cli.ShowSubcommandHelp(c)
-		return cli.Exit("", 1)
-	}
-
 	cnoStr := c.String("cno")
 	if cnoStr == "" {
 		_ = cli.ShowSubcommandHelp(c)
@@ -221,6 +216,9 @@ func actorRenderAction(c *cli.Context) error {
 
 	// Open and parse the chunky file.
 	path := c.Args().First()
+	if path == "" {
+		path = "TMPLS.3CN"
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
