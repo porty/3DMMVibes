@@ -144,8 +144,12 @@ func actorListAction(c *cli.Context) error {
 		// Sort by CHID.
 		sort.Slice(actns, func(i, j int) bool { return actns[i].chid < actns[j].chid })
 
-		fmt.Printf("TMPL 0x%08X  %-9s  parts=%d  actions=%d\n",
-			chunk.CNO, kind, numParts, len(actns))
+		name := chunk.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		fmt.Printf("TMPL 0x%08X  %-9s  parts=%d  actions=%d  %s\n",
+			chunk.CNO, kind, numParts, len(actns), name)
 
 		for _, a := range actns {
 			var flags []string
