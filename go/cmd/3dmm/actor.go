@@ -4,10 +4,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"image/gif"
 	"image/png"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -207,6 +209,10 @@ func actorRenderCommand() *cli.Command {
 				Value:   "png",
 				Usage:   `Output format: "png" or "gif"`,
 			},
+			&cli.StringFlag{
+				Name:  "palette-file",
+				Usage: `Chunky file containing the global GLCR palette (default: 3DMOVIE.CHK alongside the input file)`,
+			},
 		},
 		Action: actorRenderAction,
 	}
@@ -249,8 +255,32 @@ func actorRenderAction(c *cli.Context) error {
 		return err
 	}
 
-	// Load palette for texture rendering (best-effort; nil palette = ibsetColors fallback).
-	pal, _, _ := mm.FindGLCR(cf, f)
+	// Load palette for texture rendering. TMAP pixels are indices into the global
+	// 256-color palette stored in 3DMOVIE.CHK (GLCR/0x00000000); TMPLS.3CN has no
+	// top-level GLCR of its own. Try the input file first, then fall back to
+	// 3DMOVIE.CHK in the same directory (or the --palette-file override).
+	pal, palFound, _ := mm.FindGLCR(cf, f)
+	if !palFound {
+		palFile := c.String("palette-file")
+		if palFile == "" {
+			palFile = filepath.Join(filepath.Dir(path), "3DMOVIE.CHK")
+		}
+		if pf, err2 := os.Open(palFile); err2 == nil {
+			var palFoundInFile bool
+			if pcf, err2 := mm.ParseChunkyFile(pf); err2 == nil {
+				pal, palFoundInFile, _ = mm.FindGLCR(pcf, pf)
+			}
+			pf.Close()
+			if palFoundInFile {
+				log.Printf("palette loaded from %s", palFile)
+			}
+		} else {
+			log.Printf("WARN: no GLCR in input file and could not open %s: %v", palFile, err2)
+		}
+	}
+	if len(pal.Colors) == 0 {
+		log.Printf("WARN: rendering without palette — textures will fall back to ibset colors")
+	}
 	p.Palette = pal
 
 	// Collect the CNOs to render.
@@ -395,12 +425,18 @@ func actorRenderAction(c *cli.Context) error {
 
 // renderActorGIF renders an actor template rotating 360° over 48 frames at ~12fps.
 // Each frame uses the full p.Width × p.Height canvas (no cropping) so the canvas
-// size is stable across all frames.
+// size is stable across all frames. Index 0 of the palette is transparent so the
+// black background from RenderTemplate renders as transparent in the GIF.
 func renderActorGIF(cf *mm.ChunkyFile, r *os.File, cno uint32, p mm.RenderParams) (*gif.GIF, error) {
 	const nFrames = 48
 	const gifDelay = 8 // centiseconds ≈ 12.5fps (closest integer to 100/12)
 
-	palette := mm.ActorPalette()
+	// Build palette with transparent at index 0 so background pixels are transparent.
+	actorPal := mm.ActorPalette()
+	palette := make(color.Palette, len(actorPal))
+	copy(palette, actorPal)
+	palette[0] = color.RGBA{R: 0, G: 0, B: 0, A: 0} // transparent background
+
 	var g gif.GIF
 	g.LoopCount = 0 // loop forever
 
@@ -411,9 +447,22 @@ func renderActorGIF(cf *mm.ChunkyFile, r *os.File, cno uint32, p mm.RenderParams
 			return nil, fmt.Errorf("render frame %d: %w", i, err)
 		}
 		palImg := image.NewPaletted(img.Bounds(), palette)
-		draw.Draw(palImg, img.Bounds(), img, image.Point{}, draw.Src)
+		// Map pixels manually: black background → index 0 (transparent),
+		// everything else → nearest palette color.
+		b := img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				c := img.NRGBAAt(x, y)
+				if c.R == 0 && c.G == 0 && c.B == 0 {
+					palImg.SetColorIndex(x, y, 0)
+				} else {
+					palImg.SetColorIndex(x, y, uint8(palette.Index(c)))
+				}
+			}
+		}
 		g.Image = append(g.Image, palImg)
 		g.Delay = append(g.Delay, gifDelay)
+		g.Disposal = append(g.Disposal, gif.DisposalBackground)
 	}
 	return &g, nil
 }
