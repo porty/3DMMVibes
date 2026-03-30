@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	mm "github.com/porty/3dmm-go"
@@ -27,6 +28,12 @@ func chunkyCommand() *cli.Command {
 					&cli.BoolFlag{Name: "kids", Usage: "Show child chunk types for each chunk"},
 				},
 				Action: chunkyListAction,
+			},
+			{
+				Name:      "info",
+				Usage:     "Show chunk-type summary for one or more chunky files",
+				ArgsUsage: "[file ...]",
+				Action:    chunkyInfoAction,
 			},
 			{
 				Name:      "extract",
@@ -273,6 +280,107 @@ func extractChunks(r io.ReaderAt, cf *mm.ChunkyFile, sourcePath string, chunks [
 	}
 	fmt.Printf("wrote manifest.json to %s\n", outDir)
 	return nil
+}
+
+// chunkyInfoAction implements `chunky info [file ...]`.
+// With no args it scans the current directory for known chunky extensions.
+func chunkyInfoAction(c *cli.Context) error {
+	paths := c.Args().Slice()
+	if len(paths) == 0 {
+		entries, err := os.ReadDir(".")
+		if err != nil {
+			return fmt.Errorf("reading directory: %w", err)
+		}
+		chunkyExts := map[string]bool{
+			".chk": true, ".cht": true,
+			".3th": true, ".3cn": true, ".3mm": true, ".3cm": true,
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if chunkyExts[strings.ToLower(filepath.Ext(e.Name()))] {
+				paths = append(paths, e.Name())
+			}
+		}
+		if len(paths) == 0 {
+			fmt.Println("no chunky files found in current directory")
+			return nil
+		}
+	}
+
+	for i, path := range paths {
+		if i > 0 {
+			fmt.Println()
+		}
+		if err := printChunkyInfo(path); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", path, err)
+		}
+	}
+	return nil
+}
+
+func printChunkyInfo(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	defer f.Close()
+
+	cf, err := mm.ParseChunkyFile(f)
+	if err != nil {
+		return err
+	}
+
+	type tagStats struct {
+		count int
+		size  int64
+	}
+	stats := make(map[string]*tagStats)
+	for _, ch := range cf.Chunks {
+		tag := mm.CTGToString(ch.CTG)
+		s := stats[tag]
+		if s == nil {
+			s = &tagStats{}
+			stats[tag] = s
+		}
+		s.count++
+		s.size += int64(ch.Size)
+	}
+
+	tags := make([]string, 0, len(stats))
+	for t := range stats {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+
+	fmt.Printf("%s  (creator: %s  ver: %d/%d  chunks: %d)\n",
+		filepath.Base(path), mm.CTGToString(cf.Creator), cf.VerCur, cf.VerBack, len(cf.Chunks))
+	fmt.Printf("  %-6s  %6s  %10s\n", "TAG", "COUNT", "SIZE")
+	fmt.Printf("  %s\n", strings.Repeat("-", 26))
+	for _, tag := range tags {
+		s := stats[tag]
+		fmt.Printf("  %-6s  %6d  %10s\n", tag, s.count, humanBytes(s.size))
+	}
+	return nil
+}
+
+func humanBytes(n int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+	switch {
+	case n >= GB:
+		return fmt.Sprintf("%.2f GB", float64(n)/GB)
+	case n >= MB:
+		return fmt.Sprintf("%.2f MB", float64(n)/MB)
+	case n >= KB:
+		return fmt.Sprintf("%.2f KB", float64(n)/KB)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // parseCTGString converts a user-supplied 4-char string (e.g. "MVIE") to the
