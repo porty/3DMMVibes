@@ -25,6 +25,7 @@ type Vec3 struct{ X, Y, Z float64 }
 // BRVertex is one vertex from a BRender model.
 type BRVertex struct {
 	Pos     Vec3
+	U, V    float64 // texture coordinates in [0,1] from 16.16 BRS fixed-point
 	R, G, B uint8
 }
 
@@ -67,7 +68,8 @@ func ParseBMDL(data []byte) (*BRModel, error) {
 		x := int32(binary.LittleEndian.Uint32(data[off : off+4]))
 		y := int32(binary.LittleEndian.Uint32(data[off+4 : off+8]))
 		z := int32(binary.LittleEndian.Uint32(data[off+8 : off+12]))
-		// UV map: [12:20] — ignored
+		rawU := int32(binary.LittleEndian.Uint32(data[off+12 : off+16]))
+		rawV := int32(binary.LittleEndian.Uint32(data[off+16 : off+20]))
 		// index, R, G, B at [20:24]
 		r := data[off+21]
 		g := data[off+22]
@@ -78,6 +80,8 @@ func ParseBMDL(data []byte) (*BRModel, error) {
 				Y: brsToFloat64(y),
 				Z: brsToFloat64(z),
 			},
+			U: brsToFloat64(rawU),
+			V: brsToFloat64(rawV),
 			R: r, G: g, B: b,
 		}
 		off += brVertexSize

@@ -154,6 +154,87 @@ BOM: `kbomCps = 0x50000000`
 
 ---
 
+## Material Chunks — `CMTL` and `MTRL`
+
+**Tags:** `'CMTL'` (`kctgCmtl`), `'MTRL'` (`kctgMtrl`)
+**Source:** `inc/mtrl.h`, `src/engine/mtrl.cpp`
+**Found in:** `.3CN` content files (e.g. `TMPLS.3CN`)
+
+A `TMPL` chunk holds one or more `CMTL` (custom material / costume) children, each of which covers exactly one body-part set. Multiple `CMTL` chunks can cover the same `ibset` — they represent alternate costume slots. Each `CMTL` in turn contains one `MTRL` (material) child per body part in that set.
+
+### CMTL chunk — `CMTLF` (8 bytes)
+
+| Offset | Type    | Field   | Description |
+|--------|---------|---------|-------------|
+| 0      | `short` | `bo`    | Byte-order marker |
+| 2      | `short` | `osk`   | OS kind |
+| 4      | `long`  | `ibset` | Index of the body-part set this CMTL applies to |
+
+BOM: `kbomCmtlf = 0x5c000000`
+
+**CMTL children:**
+
+| Tag | CHID | Description |
+|-----|------|-------------|
+| `MTRL` | 0, 1, 2, … | One material per body part in the set; CHID = position within the ibset |
+| `BMDL` | 0, 1, 2, … | Optional replacement model per body part (same CHID as its MTRL) |
+
+### MTRL chunk — `MTRLF` (20 bytes)
+
+| Offset | Type     | Field          | Description |
+|--------|----------|----------------|-------------|
+| 0      | `short`  | `bo`           | Byte-order marker |
+| 2      | `short`  | `osk`          | OS kind |
+| 4      | `ulong`  | `brc`          | RGB color: `r=(brc>>16)&0xFF`, `g=(brc>>8)&0xFF`, `b=brc&0xFF` |
+| 8      | `ushort` | `brufKa`       | Ambient coefficient (0.16 unsigned fixed-point; unused by Go renderer) |
+| 10     | `ushort` | `brufKd`       | Diffuse coefficient (0.16 unsigned fixed-point; unused by Go renderer) |
+| 12     | `ushort` | `brufKs`       | Specular coefficient (always 0 in 3DMM) |
+| 14     | `byte`   | `bIndexBase`   | Palette base index for solid-color indexed rendering |
+| 15     | `byte`   | `cIndexRange`  | Palette color range count |
+| 16     | `long`   | `rPower`       | Specular exponent (15.16 BRS fixed-point; unused by Go renderer) |
+
+BOM: `kbomMtrlf = 0x5D530000`
+
+A textured MTRL has a `TMAP` child at CHID=0; a solid-color MTRL has no `TMAP` child. The `brc` color is valid in both cases, though for textured materials the engine uses the texture exclusively.
+
+---
+
+## Texture Map Chunk — `TMAP`
+
+**Tag:** `'TMAP'` (`kctgTmap`)
+**Source:** `bren/inc/tmap.h`, `bren/tmap.cpp`
+**Child of:** `MTRL` (CHID=0 when present)
+
+A `TMAP` chunk stores a rectangular bitmap of 8-bit palette indices used as a texture map. In 3DMM all textures use the `BR_PMT_INDEX_8` pixel format — each pixel is one byte whose value is a palette index.
+
+### On-disk layout — `TMAPF` header (20 bytes) + pixel data
+
+| Offset | Type    | Field       | Description |
+|--------|---------|-------------|-------------|
+| 0      | `short` | `bo`        | Byte-order marker |
+| 2      | `short` | `osk`       | OS kind |
+| 4      | `short` | `cbRow`     | Byte stride per row (≥ `dxp` for 8-bit pixels) |
+| 6      | `byte`  | `type`      | Pixel format (`BR_PMT_INDEX_8 = 0x05` in all 3DMM textures) |
+| 7      | `byte`  | `grftmap`   | Flags (typically `BR_PMF_LINEAR = 0x02`) |
+| 8      | `short` | `xpLeft`    | Left origin of visible region |
+| 10     | `short` | `ypTop`     | Top origin of visible region |
+| 12     | `short` | `dxp`       | Width in pixels |
+| 14     | `short` | `dyp`       | Height in pixels |
+| 16     | `short` | `xpOrigin`  | Graphics origin X |
+| 18     | `short` | `ypOrigin`  | Graphics origin Y |
+
+Pixel data follows immediately: `cbRow × dyp` bytes. Pixel `(x, y)` is at byte `y*cbRow + x` and its value is a palette index 0–255.
+
+BOM: `kbomTmapf = 0x54555000`
+
+**Palette mapping in Go:** The Go renderer treats the TMAP pixel value directly as an index into the `GLCR` palette (loaded via `FindGLCR`). This ignores the shade table used by the original BRender pipeline for lighting, which is correct given that the Go renderer does not implement lighting.
+
+**Texture UV coordinates** are stored in each `BMDL` vertex at bytes 12–19 as two `int32` BRS (15.16 fixed-point) values `(U, V)`. Values are in the range `[0, 1]`; the Go renderer wraps them with `u -= floor(u)` before sampling.
+
+**Shade table** (`_ptmapShadeTable` in `MTRL`): a separate `TMAP` chunk containing a 2D lookup table mapping `(lighting_level, texture_index) → palette_index`. It is only needed for lit rendering and is not used by the Go renderer.
+
+---
+
 ## Thumbnail Browser Files (`.3TH`)
 
 Thumbnail files drive the actor/prop picker browser in the Studio UI. Each `.3TH` file pairs UI descriptors with thumbnail images and cross-file references to the content in the corresponding `.3CN`.
@@ -234,3 +315,7 @@ The `MACTR` extra-data in the GST also stores `tagTmpl` and the `grfbrws` flags 
 | `inc/soc.h` | `kctgTmpl`, `kctgActn`, `kctgTmth`, `kctgPrth`, `kftgContent`, `kftgThumbDesc` constants |
 | `src/engine/tagman.cpp` | `TAGM` — resolves TAG references to content files |
 | `go/actor.go` | Go parser for `ACTR`, `PATH`, `GGAE` (instance side) |
+| `go/mtrl.go` | Go parsers for `CMTL`, `MTRL`, `TMAP`; `Material`, `TexMap`, `LoadedCMTL` structs |
+| `go/tmpl.go` | `LoadedTemplate.Costumes` / `IBSetPartIndex`; CMTL/MTRL/TMAP loading in `LoadTemplate` |
+| `go/bmdl.go` | `BRVertex.U`, `BRVertex.V`; UV extraction in `ParseBMDL` |
+| `go/actor_render.go` | Material-aware `RenderTemplate`; UV-interpolated `fillTriangle`; `RenderParams.Palette` |

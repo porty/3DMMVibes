@@ -29,6 +29,9 @@ type RenderParams struct {
 	ActionCHID uint32
 	CelIdx     int
 	YawDeg     float64 // Y-axis rotation of actor in degrees (0 = default view)
+	// Palette is the GLCR palette used for texture index → RGB lookup.
+	// A nil/zero palette disables texture rendering (ibsetColors fallback is used).
+	Palette Palette
 }
 
 // ActorPalette returns the color palette used for actor template rendering:
@@ -43,9 +46,12 @@ func ActorPalette() color.Palette {
 
 // worldTriangle is one projected triangle ready for rasterization.
 type worldTriangle struct {
-	sx, sy [3]int  // screen pixel coords of the 3 vertices
-	avgZ   float64 // mean camera-space Z (used for painter's algorithm sort)
+	sx, sy [3]int     // screen pixel coords of the 3 vertices
+	su, sv [3]float64 // texture UV at each vertex (only used when mat != nil && mat.HasTexture)
+	avgZ   float64    // mean camera-space Z (used for painter's algorithm sort)
 	col    color.NRGBA
+	mat    *Material // nil → use col; non-nil textured → UV-sample TMAP
+	pal    Palette   // palette for texture index → RGB (copied from RenderParams)
 }
 
 // RenderTemplate loads and renders one TMPL chunk into an NRGBA image.
@@ -78,7 +84,9 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 	// Collect world-space triangles for all body parts.
 	type triData struct {
 		world [3]Vec3
+		uv    [3][2]float64 // UV at each vertex (texture coords, not world positions)
 		ibset int
+		mat   *Material
 	}
 	var allTris []triData
 
@@ -91,6 +99,18 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 		ibset := 0
 		if partIdx < len(tmpl.IBSets) {
 			ibset = tmpl.IBSets[partIdx]
+		}
+
+		// Look up material for this body part.
+		var mat *Material
+		if cmtl, ok := tmpl.Costumes[ibset]; ok {
+			pos := 0
+			if partIdx < len(tmpl.IBSetPartIndex) {
+				pos = tmpl.IBSetPartIndex[partIdx]
+			}
+			if pos < len(cmtl.Parts) {
+				mat = cmtl.Parts[pos]
+			}
 		}
 
 		worldVerts := make([]Vec3, len(model.Verts))
@@ -122,7 +142,13 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 			}
 			allTris = append(allTris, triData{
 				world: [3]Vec3{worldVerts[v0], worldVerts[v1], worldVerts[v2]},
+				uv: [3][2]float64{
+					{model.Verts[v0].U, model.Verts[v0].V},
+					{model.Verts[v1].U, model.Verts[v1].V},
+					{model.Verts[v2].U, model.Verts[v2].V},
+				},
 				ibset: ibset,
+				mat:   mat,
 			})
 		}
 	}
@@ -181,7 +207,15 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 	// Project triangles.
 	var screenTris []worldTriangle
 	for _, td := range allTris {
-		col := ibsetColors[td.ibset%len(ibsetColors)]
+		// Determine fill color. Textured materials set mat but use col as fallback
+		// (e.g. when palette is nil or texture lookup fails).
+		var col color.NRGBA
+		switch {
+		case td.mat != nil && !td.mat.HasTexture:
+			col = color.NRGBA{R: td.mat.R, G: td.mat.G, B: td.mat.B, A: 255}
+		default:
+			col = ibsetColors[td.ibset%len(ibsetColors)]
+		}
 
 		sx0, sy0, ok0 := projectWorldPoint(cam, td.world[0].X, td.world[0].Y, td.world[0].Z)
 		sx1, sy1, ok1 := projectWorldPoint(cam, td.world[1].X, td.world[1].Y, td.world[1].Z)
@@ -194,8 +228,12 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 		screenTris = append(screenTris, worldTriangle{
 			sx:   [3]int{sx0, sx1, sx2},
 			sy:   [3]int{sy0, sy1, sy2},
+			su:   [3]float64{td.uv[0][0], td.uv[1][0], td.uv[2][0]},
+			sv:   [3]float64{td.uv[0][1], td.uv[1][1], td.uv[2][1]},
 			avgZ: avgZ,
 			col:  col,
+			mat:  td.mat,
+			pal:  p.Palette,
 		})
 	}
 
@@ -213,55 +251,130 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 		}
 	}
 	for _, tri := range screenTris {
-		fillTriangle(img, tri.sx, tri.sy, tri.col)
+		fillTriangle(img, tri.sx, tri.sy, tri.su, tri.sv, tri.col, tri.mat, tri.pal)
 	}
 	return img, nil
 }
 
-// fillTriangle rasterizes a flat-shaded triangle onto img using a scanline fill.
-func fillTriangle(img *image.NRGBA, sx, sy [3]int, col color.NRGBA) {
-	// Sort vertices by Y.
-	v := [3][2]int{{sx[0], sy[0]}, {sx[1], sy[1]}, {sx[2], sy[2]}}
-	if v[0][1] > v[1][1] {
-		v[0], v[1] = v[1], v[0]
+// fillTriangle rasterizes a triangle onto img using a scanline fill.
+// For solid-color triangles (mat == nil or !mat.HasTexture) it uses col directly.
+// For textured triangles it interpolates UV linearly and samples mat.Tex via pal.
+func fillTriangle(img *image.NRGBA, sx, sy [3]int, su, sv [3]float64, col color.NRGBA, mat *Material, pal Palette) {
+	textured := mat != nil && mat.HasTexture && len(pal.Colors) > 0
+
+	// Sort vertices by Y (bubble sort on the 3-element array).
+	type vt struct {
+		x, y int
+		u, v float64
 	}
-	if v[1][1] > v[2][1] {
-		v[1], v[2] = v[2], v[1]
+	verts := [3]vt{
+		{sx[0], sy[0], su[0], sv[0]},
+		{sx[1], sy[1], su[1], sv[1]},
+		{sx[2], sy[2], su[2], sv[2]},
 	}
-	if v[0][1] > v[1][1] {
-		v[0], v[1] = v[1], v[0]
+	if verts[0].y > verts[1].y {
+		verts[0], verts[1] = verts[1], verts[0]
+	}
+	if verts[1].y > verts[2].y {
+		verts[1], verts[2] = verts[2], verts[1]
+	}
+	if verts[0].y > verts[1].y {
+		verts[0], verts[1] = verts[1], verts[0]
 	}
 
 	bounds := img.Bounds()
 
-	fillSpan := func(y, x0, x1 int) {
-		if y < bounds.Min.Y || y >= bounds.Max.Y {
-			return
-		}
-		if x0 > x1 {
-			x0, x1 = x1, x0
-		}
-		x0 = max(x0, bounds.Min.X)
-		x1 = min(x1, bounds.Max.X-1)
-		for x := x0; x <= x1; x++ {
-			img.SetNRGBA(x, y, col)
-		}
-	}
-
+	// edgeX interpolates the X position along an edge at scanline y.
 	edgeX := func(ax, ay, bx, by, y int) int {
 		if ay == by {
 			return ax
 		}
 		return ax + (bx-ax)*(y-ay)/(by-ay)
 	}
+	// edgeF interpolates a float attribute along an edge at scanline y.
+	edgeF := func(af float64, ay int, bf float64, by int, y int) float64 {
+		if ay == by {
+			return af
+		}
+		t := float64(y-ay) / float64(by-ay)
+		return af + (bf-af)*t
+	}
 
-	y0, y1, y2 := v[0][1], v[1][1], v[2][1]
-	x0, x1, x2 := v[0][0], v[1][0], v[2][0]
+	fillSpan := func(y, x0, x1 int, u0, u1, v0, v1 float64) {
+		if y < bounds.Min.Y || y >= bounds.Max.Y {
+			return
+		}
+		if x0 > x1 {
+			x0, x1 = x1, x0
+			u0, u1 = u1, u0
+			v0, v1 = v1, v0
+		}
+		x0 = max(x0, bounds.Min.X)
+		x1 = min(x1, bounds.Max.X-1)
+		if !textured {
+			for x := x0; x <= x1; x++ {
+				img.SetNRGBA(x, y, col)
+			}
+			return
+		}
+		// Interpolate UV across the span and sample the texture.
+		spanW := x1 - x0
+		for x := x0; x <= x1; x++ {
+			var u, v float64
+			if spanW > 0 {
+				t := float64(x-x0) / float64(spanW)
+				u = u0 + (u1-u0)*t
+				v = v0 + (v1-v0)*t
+			} else {
+				u, v = u0, v0
+			}
+			// Wrap UV to [0,1).
+			u -= math.Floor(u)
+			v -= math.Floor(v)
+			ui := int(u * float64(mat.Tex.Width))
+			vi := int(v * float64(mat.Tex.Height))
+			if ui >= mat.Tex.Width {
+				ui = mat.Tex.Width - 1
+			}
+			if vi >= mat.Tex.Height {
+				vi = mat.Tex.Height - 1
+			}
+			palIdx := int(mat.Tex.Pixels[vi*mat.Tex.RowBytes+ui])
+			if palIdx < len(pal.Colors) {
+				r, g, b, a := pal.Colors[palIdx].RGBA()
+				img.SetNRGBA(x, y, color.NRGBA{
+					R: uint8(r >> 8),
+					G: uint8(g >> 8),
+					B: uint8(b >> 8),
+					A: uint8(a >> 8),
+				})
+			} else {
+				img.SetNRGBA(x, y, col)
+			}
+		}
+	}
+
+	y0, y1, y2 := verts[0].y, verts[1].y, verts[2].y
+	x0, x1, x2 := verts[0].x, verts[1].x, verts[2].x
+	u0, u1, u2 := verts[0].u, verts[1].u, verts[2].u
+	v0, v1, v2 := verts[0].v, verts[1].v, verts[2].v
 
 	for y := y0; y <= y1; y++ {
-		fillSpan(y, edgeX(x0, y0, x1, y1, y), edgeX(x0, y0, x2, y2, y))
+		xa := edgeX(x0, y0, x1, y1, y)
+		xb := edgeX(x0, y0, x2, y2, y)
+		ua := edgeF(u0, y0, u1, y1, y)
+		ub := edgeF(u0, y0, u2, y2, y)
+		va := edgeF(v0, y0, v1, y1, y)
+		vb := edgeF(v0, y0, v2, y2, y)
+		fillSpan(y, xa, xb, ua, ub, va, vb)
 	}
 	for y := y1 + 1; y <= y2; y++ {
-		fillSpan(y, edgeX(x1, y1, x2, y2, y), edgeX(x0, y0, x2, y2, y))
+		xa := edgeX(x1, y1, x2, y2, y)
+		xb := edgeX(x0, y0, x2, y2, y)
+		ua := edgeF(u1, y1, u2, y2, y)
+		ub := edgeF(u0, y0, u2, y2, y)
+		va := edgeF(v1, y1, v2, y2, y)
+		vb := edgeF(v0, y0, v2, y2, y)
+		fillSpan(y, xa, xb, ua, ub, va, vb)
 	}
 }

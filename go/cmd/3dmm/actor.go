@@ -249,6 +249,10 @@ func actorRenderAction(c *cli.Context) error {
 		return err
 	}
 
+	// Load palette for texture rendering (best-effort; nil palette = ibsetColors fallback).
+	pal, _, _ := mm.FindGLCR(cf, f)
+	p.Palette = pal
+
 	// Collect the CNOs to render.
 	var cnos []uint32
 	if cnoStr == "all" {

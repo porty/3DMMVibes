@@ -44,6 +44,12 @@ type LoadedTemplate struct {
 	// ParentParts[i] is the index of body part i's parent, or -1 if it is a
 	// root part (its parent is the body's root actor, which has identity transform).
 	ParentParts []int
+	// Costumes maps ibset → the first LoadedCMTL found for that ibset.
+	// Body parts with no matching CMTL fall back to ibsetColors in the renderer.
+	Costumes map[int]*LoadedCMTL
+	// IBSetPartIndex[i] is the 0-based position of body part i among all body
+	// parts that share the same ibset. Used to index into LoadedCMTL.Parts.
+	IBSetPartIndex []int
 }
 
 // LoadTemplate reads a TMPL chunk (by CNO) from cf and parses its full subtree.
@@ -63,10 +69,11 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 	grfTmpl := binary.LittleEndian.Uint32(tmplData[12:16])
 
 	lt := &LoadedTemplate{
-		CNO:     cno,
-		GrfTmpl: grfTmpl,
-		Actions: make(map[uint32]*ActionData),
-		Models:  make(map[uint32]*BRModel),
+		CNO:      cno,
+		GrfTmpl:  grfTmpl,
+		Actions:  make(map[uint32]*ActionData),
+		Models:   make(map[uint32]*BRModel),
+		Costumes: make(map[int]*LoadedCMTL),
 	}
 
 	// Load GLBS for body-part-set mapping.
@@ -131,6 +138,81 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 			continue
 		}
 		lt.Models[kid.CHID] = model
+	}
+
+	// Load CMTL children (costumes). Use the first CMTL found for each ibset.
+	for _, kid := range tmplChunk.Kids {
+		if kid.CTG != TagCMTL {
+			continue
+		}
+		cmtlChunk, ok := cf.FindChunk(kid.CTG, kid.CNO)
+		if !ok {
+			continue
+		}
+		cmtlData, err := ChunkData(r, cmtlChunk)
+		if err != nil {
+			continue
+		}
+		ibset, err := parseCMTLF(cmtlData)
+		if err != nil {
+			continue
+		}
+		// Use the first CMTL for each ibset.
+		if _, exists := lt.Costumes[ibset]; exists {
+			continue
+		}
+		// Determine the number of MTRL parts by scanning CHID values.
+		maxChid := -1
+		for _, ck := range cmtlChunk.Kids {
+			if ck.CTG == TagMTRL && int(ck.CHID) > maxChid {
+				maxChid = int(ck.CHID)
+			}
+		}
+		if maxChid < 0 {
+			continue
+		}
+		cmtl := &LoadedCMTL{
+			IBSet: ibset,
+			Parts: make([]*Material, maxChid+1),
+		}
+		for _, ck := range cmtlChunk.Kids {
+			if ck.CTG != TagMTRL {
+				continue
+			}
+			mtrlChunk, ok := cf.FindChunk(ck.CTG, ck.CNO)
+			if !ok {
+				continue
+			}
+			mtrlData, err := ChunkData(r, mtrlChunk)
+			if err != nil {
+				continue
+			}
+			// Look for TMAP child of MTRL at CHID=0.
+			var tmapData []byte
+			for _, mk := range mtrlChunk.Kids {
+				if mk.CTG == TagTMAP && mk.CHID == 0 {
+					tmapChunk, ok := cf.FindChunk(mk.CTG, mk.CNO)
+					if ok {
+						tmapData, _ = ChunkData(r, tmapChunk)
+					}
+					break
+				}
+			}
+			mat, err := parseMTRLF(mtrlData, tmapData)
+			if err != nil {
+				continue
+			}
+			cmtl.Parts[ck.CHID] = mat
+		}
+		lt.Costumes[ibset] = cmtl
+	}
+
+	// Precompute IBSetPartIndex: position of each body part within its ibset.
+	ibsetCount := make(map[int]int)
+	lt.IBSetPartIndex = make([]int, lt.NumBodyParts)
+	for i, ibset := range lt.IBSets {
+		lt.IBSetPartIndex[i] = ibsetCount[ibset]
+		ibsetCount[ibset]++
 	}
 
 	// Collect and sort ACTN children by CHID so Actions are in anid order.
