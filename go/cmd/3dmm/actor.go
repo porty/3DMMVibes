@@ -440,9 +440,17 @@ func renderActorGIF(cf *mm.ChunkyFile, r *os.File, cno uint32, p mm.RenderParams
 	const gifDelay = 8 // centiseconds ≈ 12.5fps (closest integer to 100/12)
 
 	// Build palette with transparent at index 0 so background pixels are transparent.
-	actorPal := mm.ActorPalette()
-	palette := make(color.Palette, len(actorPal))
-	copy(palette, actorPal)
+	// Use the GLCR palette when available so GIF colors match the PNG output.
+	// Fall back to the ibset palette only when no GLCR was loaded.
+	var palette color.Palette
+	if len(p.Palette.Colors) > 0 {
+		palette = make(color.Palette, len(p.Palette.Colors))
+		copy(palette, p.Palette.Colors)
+	} else {
+		actorPal := mm.ActorPalette()
+		palette = make(color.Palette, len(actorPal))
+		copy(palette, actorPal)
+	}
 	palette[0] = color.RGBA{R: 0, G: 0, B: 0, A: 0} // transparent background
 
 	var g gif.GIF
