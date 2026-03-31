@@ -194,7 +194,12 @@ func actorRenderCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "cno",
-				Usage: `CNO of the TMPL chunk (hex, e.g. 0x2010), actor name (e.g. "Keesha"), or "all"`,
+				Usage: `CNO of the TMPL chunk (hex e.g. 0x2010) or "all"`,
+			},
+			&cli.StringFlag{
+				Name:    "name",
+				Aliases: []string{"n"},
+				Usage:   `Actor/prop name to render (e.g. "Keesha"); alternative to --cno`,
 			},
 			&cli.StringFlag{Name: "o", Usage: `Output file (png) or directory (gif --cno all); default: stdout`},
 			&cli.BoolFlag{Name: "t", Usage: "Display the image in the terminal (png only)"},
@@ -220,9 +225,13 @@ func actorRenderCommand() *cli.Command {
 
 func actorRenderAction(c *cli.Context) error {
 	cnoStr := c.String("cno")
-	if cnoStr == "" {
+	nameStr := c.String("name")
+	if cnoStr == "" && nameStr == "" {
 		_ = cli.ShowSubcommandHelp(c)
-		return cli.Exit("--cno is required", 1)
+		return cli.Exit("--cno or --name is required", 1)
+	}
+	if cnoStr != "" && nameStr != "" {
+		return cli.Exit("--cno and --name are mutually exclusive", 1)
 	}
 
 	format := c.String("format")
@@ -285,7 +294,8 @@ func actorRenderAction(c *cli.Context) error {
 
 	// Collect the CNOs to render.
 	var cnos []uint32
-	if cnoStr == "all" {
+	switch {
+	case cnoStr == "all":
 		for _, chunk := range cf.Chunks {
 			if chunk.CTG == mm.TagTMPL {
 				cnos = append(cnos, chunk.CNO)
@@ -294,26 +304,24 @@ func actorRenderAction(c *cli.Context) error {
 		if len(cnos) == 0 {
 			return fmt.Errorf("no TMPL chunks found in %s", path)
 		}
-	} else {
+	case nameStr != "":
+		lower := strings.ToLower(nameStr)
+		for _, chunk := range cf.Chunks {
+			if chunk.CTG == mm.TagTMPL && strings.ToLower(chunk.Name) == lower {
+				cnos = append(cnos, chunk.CNO)
+			}
+		}
+		if len(cnos) == 0 {
+			return fmt.Errorf("no TMPL found with name %q", nameStr)
+		}
+	default:
 		var cno uint32
 		if _, err := fmt.Sscanf(cnoStr, "0x%x", &cno); err != nil {
-			if _, err2 := fmt.Sscanf(cnoStr, "%x", &cno); err2 != nil {
-				// Try matching by name.
-				nameLower := strings.ToLower(cnoStr)
-				for _, chunk := range cf.Chunks {
-					if chunk.CTG == mm.TagTMPL && strings.ToLower(chunk.Name) == nameLower {
-						cnos = append(cnos, chunk.CNO)
-					}
-				}
-				if len(cnos) == 0 {
-					return fmt.Errorf("no TMPL found with name %q", cnoStr)
-				}
-			} else {
-				cnos = []uint32{cno}
+			if _, err2 := fmt.Sscanf(cnoStr, "%d", &cno); err2 != nil {
+				return fmt.Errorf("invalid --cno %q: expected hex (0x2010) or \"all\"", cnoStr)
 			}
-		} else {
-			cnos = []uint32{cno}
 		}
+		cnos = []uint32{cno}
 	}
 
 	// Render each CNO.
