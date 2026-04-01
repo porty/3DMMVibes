@@ -244,10 +244,10 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 
 	// Rasterize.
 	img := image.NewNRGBA(image.Rect(0, 0, p.Width, p.Height))
-	black := color.NRGBA{0, 0, 0, 255}
+	blank := color.NRGBA{0, 0, 0, 0}
 	for y := range p.Height {
 		for x := range p.Width {
-			img.SetNRGBA(x, y, black)
+			img.SetNRGBA(x, y, blank)
 		}
 	}
 	for _, tri := range screenTris {
