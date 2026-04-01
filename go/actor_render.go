@@ -256,6 +256,168 @@ func RenderTemplate(cf *ChunkyFile, r *os.File, cno uint32, p RenderParams) (*im
 	return img, nil
 }
 
+// RenderActorOnFrame renders an actor's current pose directly onto frame using
+// the scene's camera. This is the movie-render counterpart to RenderTemplate:
+// instead of an auto-framing camera into a blank image, it uses the provided
+// scene camera and composites onto an existing background frame.
+//
+// Body-part hierarchy transforms are applied first (from the action/cel data),
+// followed by the actor's orientation matrix (from aetRotF/aetRotH events) and
+// finally the world-space translation from state.Pos. Triangles are sorted
+// back-to-front and rasterized directly onto frame.
+//
+// If the action or cel is not available in tmpl, the function is a no-op.
+func RenderActorOnFrame(frame *image.NRGBA, cam CamParams, tmpl *LoadedTemplate, state ActorState, pal Palette) {
+	ad, ok := tmpl.Actions[state.ActionCHID]
+	if !ok || ad == nil {
+		// Fall back to first available action.
+		for _, a := range tmpl.Actions {
+			ad = a
+			break
+		}
+	}
+	if ad == nil || len(ad.Cels) == 0 {
+		return
+	}
+
+	celIdx := state.CelIdx
+	if n := len(ad.Cels); n > 0 {
+		celIdx = celIdx % n
+	}
+	if celIdx < 0 {
+		celIdx = 0
+	}
+	cel := ad.Cels[celIdx]
+
+	// Collect world-space triangles for all body parts.
+	type triData struct {
+		world [3]Vec3
+		uv    [3][2]float64
+		ibset int
+		mat   *Material
+	}
+	var allTris []triData
+
+	rot := state.Rotation
+
+	for partIdx, cps := range cel.Parts {
+		model, ok := tmpl.Models[uint32(cps.ChidModl)]
+		if !ok || model == nil || len(model.Faces) == 0 {
+			continue
+		}
+
+		ibset := 0
+		if partIdx < len(tmpl.IBSets) {
+			ibset = tmpl.IBSets[partIdx]
+		}
+
+		var mat *Material
+		if cmtl, ok := tmpl.Costumes[ibset]; ok {
+			pos := 0
+			if partIdx < len(tmpl.IBSetPartIndex) {
+				pos = tmpl.IBSetPartIndex[partIdx]
+			}
+			if pos < len(cmtl.Parts) {
+				mat = cmtl.Parts[pos]
+			}
+		}
+
+		worldVerts := make([]Vec3, len(model.Verts))
+		for vi, bv := range model.Verts {
+			// Walk body-part hierarchy: apply each ancestor's local-to-parent transform.
+			pos := bv.Pos
+			cur := partIdx
+			for cur >= 0 && cur < len(cel.Parts) {
+				imat := cel.Parts[cur].IMat34
+				if imat >= 0 && imat < len(ad.Transforms) {
+					pos = applyBMAT34(pos, ad.Transforms[imat])
+				}
+				if cur < len(tmpl.ParentParts) {
+					cur = tmpl.ParentParts[cur]
+				} else {
+					cur = -1
+				}
+			}
+
+			// Apply actor orientation (3×3 rotation only; row 3 of BMAT34 is translation
+			// which comes from the path position, not the rotation event).
+			rotated := Vec3{
+				X: pos.X*rot[0][0] + pos.Y*rot[1][0] + pos.Z*rot[2][0],
+				Y: pos.X*rot[0][1] + pos.Y*rot[1][1] + pos.Z*rot[2][1],
+				Z: pos.X*rot[0][2] + pos.Y*rot[1][2] + pos.Z*rot[2][2],
+			}
+
+			// Translate to world position.
+			worldVerts[vi] = Vec3{
+				X: rotated.X + state.Pos[0],
+				Y: rotated.Y + state.Pos[1],
+				Z: rotated.Z + state.Pos[2],
+			}
+		}
+
+		for _, face := range model.Faces {
+			v0, v1, v2 := face.V[0], face.V[1], face.V[2]
+			if v0 >= len(worldVerts) || v1 >= len(worldVerts) || v2 >= len(worldVerts) {
+				continue
+			}
+			allTris = append(allTris, triData{
+				world: [3]Vec3{worldVerts[v0], worldVerts[v1], worldVerts[v2]},
+				uv: [3][2]float64{
+					{model.Verts[v0].U, model.Verts[v0].V},
+					{model.Verts[v1].U, model.Verts[v1].V},
+					{model.Verts[v2].U, model.Verts[v2].V},
+				},
+				ibset: ibset,
+				mat:   mat,
+			})
+		}
+	}
+
+	if len(allTris) == 0 {
+		return
+	}
+
+	// Project triangles through the scene camera.
+	var screenTris []worldTriangle
+	for _, td := range allTris {
+		var col color.NRGBA
+		if td.mat != nil && !td.mat.HasTexture {
+			col = color.NRGBA{R: td.mat.R, G: td.mat.G, B: td.mat.B, A: 255}
+		} else {
+			col = ibsetColors[td.ibset%len(ibsetColors)]
+		}
+
+		sx0, sy0, ok0 := projectWorldPoint(cam, td.world[0].X, td.world[0].Y, td.world[0].Z)
+		sx1, sy1, ok1 := projectWorldPoint(cam, td.world[1].X, td.world[1].Y, td.world[1].Z)
+		sx2, sy2, ok2 := projectWorldPoint(cam, td.world[2].X, td.world[2].Y, td.world[2].Z)
+		if !ok0 && !ok1 && !ok2 {
+			continue
+		}
+
+		avgZ := (td.world[0].Z + td.world[1].Z + td.world[2].Z) / 3.0
+		screenTris = append(screenTris, worldTriangle{
+			sx:   [3]int{sx0, sx1, sx2},
+			sy:   [3]int{sy0, sy1, sy2},
+			su:   [3]float64{td.uv[0][0], td.uv[1][0], td.uv[2][0]},
+			sv:   [3]float64{td.uv[0][1], td.uv[1][1], td.uv[2][1]},
+			avgZ: avgZ,
+			col:  col,
+			mat:  td.mat,
+			pal:  pal,
+		})
+	}
+
+	// Sort back-to-front (painter's algorithm).
+	sort.Slice(screenTris, func(i, j int) bool {
+		return screenTris[i].avgZ > screenTris[j].avgZ
+	})
+
+	// Rasterize onto the background frame.
+	for _, tri := range screenTris {
+		fillTriangle(frame, tri.sx, tri.sy, tri.su, tri.sv, tri.col, tri.mat, tri.pal)
+	}
+}
+
 // fillTriangle rasterizes a triangle onto img using a scanline fill.
 // For solid-color triangles (mat == nil or !mat.HasTexture) it uses col directly.
 // For textured triangles it interpolates UV linearly and samples mat.Tex via pal.

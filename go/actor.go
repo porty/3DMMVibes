@@ -252,6 +252,126 @@ func interpolateRoute(path []RoutePoint, irpt int32, dwrOffset float64) (x, y, z
 		p0.Z + (p1.Z-p0.Z)*t
 }
 
+// ActorState is the per-frame rendering state of an actor computed from its event list.
+type ActorState struct {
+	OnStage    bool
+	Pos        [3]float64 // world-space position (X, Y, Z)
+	ActionCHID uint32     // current action CHID (matches ACTN child CHID in LoadedTemplate)
+	CelIdx     int        // current cel index within the action (not yet wrapped to action length)
+	Rotation   BMAT34     // orientation matrix from aetRotF/aetRotH; identity if none set
+}
+
+// ActorStateAtFrame computes the full per-frame rendering state of an actor at frame nfrm.
+// It is a superset of ActorWorldPos, also tracking the current action, cel, and orientation.
+//
+// Cel advancement: each frame the cel advances by 1 unless frozen (aetFreeze).
+// An aetActn event resets the cel to its startCel and stops frozen state.
+// aetRotF and aetRotH both set the actor's full orientation matrix (BMAT34, 48 bytes).
+func ActorStateAtFrame(def *ActorDef, path []RoutePoint, events []ActorEvent, nfrm int32) ActorState {
+	// Position tracking (same logic as ActorWorldPos).
+	var subX, subY, subZ float64
+	var rtelIrpt int32
+	var rtelDwrOffset float64
+	onStage := false
+
+	// Action/cel tracking.
+	actionCHID := uint32(0)
+	cel := 0
+	celNfrm := int32(0) // frame at which cel was last set; used to count elapsed frames
+	frozen := false
+	hasAction := false // true once the first aetActn event has fired
+
+	// Rotation: identity matrix.
+	rotation := BMAT34{
+		{1, 0, 0},
+		{0, 1, 0},
+		{0, 0, 1},
+		{0, 0, 0},
+	}
+
+	for i := range events {
+		ev := &events[i]
+		if ev.Nfrm > nfrm {
+			break
+		}
+
+		// Advance cel for elapsed frames since celNfrm (only after first aetActn, only when not frozen).
+		if hasAction && !frozen {
+			cel += int(ev.Nfrm - celNfrm)
+		}
+		celNfrm = ev.Nfrm
+
+		switch ev.AET {
+		case aetAdd:
+			rtelIrpt = ev.Irpt
+			rtelDwrOffset = ev.DwrOffset
+			onStage = true
+			subX, subY, subZ = 0, 0, 0
+			if len(ev.VarData) >= 12 {
+				subX = brsToFloat64(int32(binary.LittleEndian.Uint32(ev.VarData[0:4])))
+				subY = brsToFloat64(int32(binary.LittleEndian.Uint32(ev.VarData[4:8])))
+				subZ = brsToFloat64(int32(binary.LittleEndian.Uint32(ev.VarData[8:12])))
+			}
+		case aetRem:
+			onStage = false
+		case aetMove:
+			if len(ev.VarData) >= 12 {
+				subX += brsToFloat64(int32(binary.LittleEndian.Uint32(ev.VarData[0:4])))
+				subY += brsToFloat64(int32(binary.LittleEndian.Uint32(ev.VarData[4:8])))
+				subZ += brsToFloat64(int32(binary.LittleEndian.Uint32(ev.VarData[8:12])))
+			}
+		case aetActn:
+			// AEVACTN: anid(4) + celn(4) = 8 bytes.
+			if len(ev.VarData) >= 8 {
+				actionCHID = binary.LittleEndian.Uint32(ev.VarData[0:4])
+				cel = int(int32(binary.LittleEndian.Uint32(ev.VarData[4:8])))
+				celNfrm = ev.Nfrm // cel on this exact frame = startCel (no advance)
+				frozen = false
+				hasAction = true
+			}
+		case aetFreeze:
+			// VarData: fFrozen int32 (nonzero = freeze, inhibit cel advancement).
+			if len(ev.VarData) >= 4 {
+				frozen = int32(binary.LittleEndian.Uint32(ev.VarData[0:4])) != 0
+			}
+		case aetRotF, aetRotH:
+			// VarData: BMAT34 (4×3 BRS = 48 bytes, row-major).
+			if len(ev.VarData) >= 48 {
+				off := 0
+				for row := range 4 {
+					for col := range 3 {
+						v := int32(binary.LittleEndian.Uint32(ev.VarData[off : off+4]))
+						rotation[row][col] = brsToFloat64(v)
+						off += 4
+					}
+				}
+			}
+		}
+	}
+
+	// Advance cel from the last processed event up to nfrm.
+	if hasAction && !frozen {
+		cel += int(nfrm - celNfrm)
+	}
+	if cel < 0 {
+		cel = 0
+	}
+
+	// Compute world position (same as ActorWorldPos).
+	var px, py, pz float64
+	if onStage && len(path) > 0 {
+		px, py, pz = interpolateRoute(path, rtelIrpt, rtelDwrOffset)
+	}
+
+	return ActorState{
+		OnStage:    onStage,
+		Pos:        [3]float64{px + subX + def.FullRouteOffset[0], py + subY + def.FullRouteOffset[1], pz + subZ + def.FullRouteOffset[2]},
+		ActionCHID: actionCHID,
+		CelIdx:     cel,
+		Rotation:   rotation,
+	}
+}
+
 // AEVSND is the variable-data payload for an aetSnd actor event (44 bytes).
 //
 // Layout (all little-endian):

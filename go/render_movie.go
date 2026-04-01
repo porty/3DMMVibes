@@ -241,6 +241,116 @@ type bkgdCache struct {
 	scene *BackgroundScene
 }
 
+// tmplLoader indexes TMPL chunks found in an assets directory and caches
+// loaded templates. It also holds the global colour palette (GLCR) used for
+// actor texture rendering. A nil *tmplLoader is safe to use: all lookups
+// return (nil, false).
+type tmplLoader struct {
+	// sources maps TMPL CNO → the chunky file containing it.
+	sources map[uint32]tmplSource
+	// loaded caches the result of LoadTemplate per CNO (nil value = load failed).
+	loaded map[uint32]*LoadedTemplate
+	// openFiles owns all *os.File handles opened for TMPL content.
+	openFiles []*os.File
+	// pal is the first GLCR palette found in the assets directory.
+	pal Palette
+}
+
+type tmplSource struct {
+	cf *ChunkyFile
+	f  *os.File
+}
+
+// close releases all file handles held by the loader.
+func (tl *tmplLoader) close() {
+	if tl == nil {
+		return
+	}
+	for _, f := range tl.openFiles {
+		f.Close()
+	}
+}
+
+// get returns the LoadedTemplate for cno, loading it on first access.
+// Returns (nil, false) when the template is not found or fails to load.
+func (tl *tmplLoader) get(cno uint32) (*LoadedTemplate, bool) {
+	if tl == nil {
+		return nil, false
+	}
+	if tmpl, ok := tl.loaded[cno]; ok {
+		return tmpl, tmpl != nil
+	}
+	src, ok := tl.sources[cno]
+	if !ok {
+		tl.loaded[cno] = nil
+		return nil, false
+	}
+	tmpl, err := LoadTemplate(src.cf, src.f, cno)
+	if err != nil {
+		tl.loaded[cno] = nil
+		return nil, false
+	}
+	tl.loaded[cno] = tmpl
+	return tmpl, true
+}
+
+// openAssetsLoader scans assetsDir for chunky files, indexes all TMPL chunks
+// by CNO, and loads the first GLCR palette it finds. Returns nil (not an error)
+// when assetsDir is empty — callers treat nil as "no templates available".
+func openAssetsLoader(assetsDir string, logger *log.Logger) *tmplLoader {
+	if assetsDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(assetsDir)
+	if err != nil {
+		logger.Printf("warning: reading assets dir %q: %v", assetsDir, err)
+		return nil
+	}
+	tl := &tmplLoader{
+		sources: make(map[uint32]tmplSource),
+		loaded:  make(map[uint32]*LoadedTemplate),
+	}
+	for _, de := range entries {
+		if de.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(de.Name())) {
+		case ".3cn", ".3th", ".chk", ".3mm":
+		default:
+			continue
+		}
+		path := filepath.Join(assetsDir, de.Name())
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		cf, err := ParseChunkyFile(f)
+		if err != nil {
+			f.Close()
+			continue
+		}
+		hasTMPL := false
+		for _, chunk := range cf.Chunks {
+			if chunk.CTG == TagTMPL {
+				hasTMPL = true
+				tl.sources[chunk.CNO] = tmplSource{cf: cf, f: f}
+			}
+		}
+		// Load the global palette from the first file that has a GLCR chunk.
+		if len(tl.pal.Colors) == 0 {
+			if p, ok, _ := FindGLCR(cf, f); ok {
+				tl.pal = p
+			}
+		}
+		if hasTMPL {
+			tl.openFiles = append(tl.openFiles, f)
+		} else {
+			f.Close()
+		}
+	}
+	return tl
+}
+
 // FindBKGDInDir scans dir for chunky files (.3cn, .3th, .chk) that contain a
 // BKGD chunk with the given CNO. Returns the parsed ChunkyFile, an open
 // *os.File (caller must close), and the BKGD Chunk on success.
@@ -280,7 +390,7 @@ func FindBKGDInDir(dir string, cno uint32) (*ChunkyFile, *os.File, Chunk, error)
 func renderCommand() *cli.Command {
 	commonFlags := []cli.Flag{
 		&cli.IntFlag{Name: "scene", Value: -1, Usage: "Render only scene N (0-based); -1 = all scenes"},
-		&cli.StringFlag{Name: "bkgddir", Usage: "Directory containing background content files (.3cn/.3th/.chk)"},
+		&cli.StringFlag{Name: "assets", Usage: "Directory containing game content files (.3cn/.3th/.chk) for backgrounds and actor templates"},
 	}
 	return &cli.Command{
 		Name:      "render",
@@ -293,7 +403,7 @@ func renderCommand() *cli.Command {
 				ArgsUsage: "<movie.3mm>",
 				Description: "Render each frame of a .3MM movie as a PNG image.\n" +
 					"Backgrounds use the correct camera angle per frame.\n" +
-					"Actors are shown as colored circles (full 3D rendering is future work).",
+					"Actors are rendered in 3D when --assets points to the game content directory.",
 				Flags: append(commonFlags,
 					&cli.StringFlag{Name: "outdir", Value: "frames", Usage: "Output directory for PNG frames"},
 				),
@@ -308,7 +418,7 @@ func renderCommand() *cli.Command {
 					"background image (typically %[1]dx%[2]d). 3D Movie Maker runs at 12 frames per second.\n\n"+
 					"Pass these values to ffmpeg via -video_size, -framerate, and -pixel_format rgb24.\n\n"+
 					"Example:\n"+
-					"  3dmm render rgb24 --bkgddir ./content movie.3mm \\\n"+
+					"  3dmm render rgb24 --assets ./content movie.3mm \\\n"+
 					"    | ffmpeg -f rawvideo -video_size %[1]dx%[2]d -pixel_format rgb24 -framerate 12 -i - output.mp4",
 					DefaultWidth, DefaultHeight),
 				Flags: append(commonFlags,
@@ -324,7 +434,7 @@ func renderCommand() *cli.Command {
 					"--video-size must match the background resolution of the movie (typically %[1]dx%[2]d).\n"+
 					"3D Movie Maker movies run at 12 frames per second.\n\n"+
 					"Example:\n"+
-					"  3dmm render ffmpeg --bkgddir ./content --video-size %[1]dx%[2]d movie.3mm output.mp4",
+					"  3dmm render ffmpeg --assets ./content --video-size %[1]dx%[2]d movie.3mm output.mp4",
 					DefaultWidth, DefaultHeight),
 				Flags: append(commonFlags,
 					&cli.StringFlag{Name: "video-size", Value: fmt.Sprintf("%dx%d", DefaultWidth, DefaultHeight), Usage: "Frame dimensions WxH (must match background resolution)"},
@@ -355,7 +465,7 @@ func renderPNGAction(c *cli.Context) error {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	return RenderMovie(c.String("outdir"), c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
+	return RenderMovie(c.String("outdir"), c.Int("scene"), c.String("assets"), cf, f, log.New(os.Stderr, "", 0))
 }
 
 func renderRGB24Action(c *cli.Context) error {
@@ -388,7 +498,7 @@ func renderRGB24Action(c *cli.Context) error {
 		defer out.Close()
 	}
 
-	return RenderMovieRGB24(out, c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
+	return RenderMovieRGB24(out, c.Int("scene"), c.String("assets"), cf, f, log.New(os.Stderr, "", 0))
 }
 
 func renderFFmpegAction(c *cli.Context) error {
@@ -433,7 +543,7 @@ func renderFFmpegAction(c *cli.Context) error {
 		return fmt.Errorf("starting ffmpeg: %w", err)
 	}
 
-	renderErr := RenderMovieRGB24(stdin, c.Int("scene"), c.String("bkgddir"), cf, f, log.New(os.Stderr, "", 0))
+	renderErr := RenderMovieRGB24(stdin, c.Int("scene"), c.String("assets"), cf, f, log.New(os.Stderr, "", 0))
 	stdin.Close()
 	cmdErr := cmd.Wait()
 
@@ -444,7 +554,7 @@ func renderFFmpegAction(c *cli.Context) error {
 }
 
 // RenderMovie renders all (or one) scene from cf to outDir.
-func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile, r io.ReaderAt, logger *log.Logger) error {
+func RenderMovie(outDir string, sceneFilter int, assetsDir string, cf *ChunkyFile, r io.ReaderAt, logger *log.Logger) error {
 	movie, err := LoadMovie(cf, r)
 	if err != nil {
 		return err
@@ -456,6 +566,10 @@ func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile,
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
+	// Load template content and global palette from the assets directory.
+	tl := openAssetsLoader(assetsDir, logger)
+	defer tl.close()
+
 	// Cache for BKGD content files opened during rendering.
 	cache := map[uint32]*bkgdCache{}
 	defer func() {
@@ -465,13 +579,13 @@ func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile,
 	}()
 
 	openBKGD := func(tag ChunkTAG) *bkgdCache {
-		if bkgdDir == "" {
+		if assetsDir == "" {
 			return nil
 		}
 		if bc, ok := cache[tag.CNO]; ok {
 			return bc
 		}
-		bkgdCF, bkgdFile, bkgdChunk, err := FindBKGDInDir(bkgdDir, tag.CNO)
+		bkgdCF, bkgdFile, bkgdChunk, err := FindBKGDInDir(assetsDir, tag.CNO)
 		if err != nil {
 			logger.Printf("warning: loading BKGD 0x%08X: %v", tag.CNO, err)
 			return nil
@@ -502,7 +616,7 @@ func RenderMovie(outDir string, sceneFilter int, bkgdDir string, cf *ChunkyFile,
 			logger.Printf("warning: scene %d: %v, skipping", i, err)
 			continue
 		}
-		if err := renderScene(outDir, i, sd, cf, r, openBKGD, logger); err != nil {
+		if err := renderScene(outDir, i, sd, cf, r, openBKGD, tl, logger); err != nil {
 			return fmt.Errorf("scene %d: %w", i, err)
 		}
 	}
@@ -517,6 +631,7 @@ func renderScene(
 	cf *ChunkyFile,
 	r io.ReaderAt,
 	openBKGD func(ChunkTAG) *bkgdCache,
+	tl *tmplLoader,
 	logger *log.Logger,
 ) error {
 	currentCam := 0
@@ -601,17 +716,26 @@ func renderScene(
 			}
 		}
 
-		// Project and draw actor position markers.
+		// Render actors. Warn once per TMPL CNO when geometry is unavailable.
+		warnedTMPL := map[uint32]bool{}
 		for _, a := range actors {
-			wx, wy, wz, onStage := ActorWorldPos(a.Def, a.Path, a.Events, nfrm)
-			if !onStage {
+			state := ActorStateAtFrame(a.Def, a.Path, a.Events, nfrm)
+			if !state.OnStage {
 				continue
 			}
-			sx, sy, inView := projectWorldPoint(cam, wx, wy, wz)
-			if !inView {
+			tmpl, ok := tl.get(a.Def.TagTmplCNO)
+			if ok {
+				RenderActorOnFrame(frame, cam, tmpl, state, tl.pal)
 				continue
 			}
-			drawCircle(frame, sx, sy, 8, actorColors[a.Def.ARID%8])
+			if !warnedTMPL[a.Def.TagTmplCNO] {
+				warnedTMPL[a.Def.TagTmplCNO] = true
+				logger.Printf("warning: scene %d: TMPL/0x%08X not found in assets, rendering actors as circles", sceneIdx, a.Def.TagTmplCNO)
+			}
+			sx, sy, inView := projectWorldPoint(cam, state.Pos[0], state.Pos[1], state.Pos[2])
+			if inView {
+				drawCircle(frame, sx, sy, 8, actorColors[a.Def.ARID%8])
+			}
 		}
 
 		// Draw audio cue labels for any sounds firing in this frame window.
@@ -631,7 +755,7 @@ func renderScene(
 
 // RenderMovieRGB24 renders all (or one) scene from cf and writes raw RGB24
 // frames to w. Each frame is width×height×3 bytes (R, G, B per pixel, row-major).
-func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFile, r io.ReaderAt, logger *log.Logger) error {
+func RenderMovieRGB24(w io.Writer, sceneFilter int, assetsDir string, cf *ChunkyFile, r io.ReaderAt, logger *log.Logger) error {
 	movie, err := LoadMovie(cf, r)
 	if err != nil {
 		return err
@@ -639,6 +763,9 @@ func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFi
 	if len(movie.Scenes) == 0 {
 		return fmt.Errorf("movie has no scenes")
 	}
+
+	tl := openAssetsLoader(assetsDir, logger)
+	defer tl.close()
 
 	cache := map[uint32]*bkgdCache{}
 	defer func() {
@@ -648,13 +775,13 @@ func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFi
 	}()
 
 	openBKGD := func(tag ChunkTAG) *bkgdCache {
-		if bkgdDir == "" {
+		if assetsDir == "" {
 			return nil
 		}
 		if bc, ok := cache[tag.CNO]; ok {
 			return bc
 		}
-		bkgdCF, bkgdFile, bkgdChunk, err := FindBKGDInDir(bkgdDir, tag.CNO)
+		bkgdCF, bkgdFile, bkgdChunk, err := FindBKGDInDir(assetsDir, tag.CNO)
 		if err != nil {
 			logger.Printf("warning: loading BKGD 0x%08X: %v", tag.CNO, err)
 			return nil
@@ -686,7 +813,7 @@ func RenderMovieRGB24(w io.Writer, sceneFilter int, bkgdDir string, cf *ChunkyFi
 			logger.Printf("warning: scene %d: %v, skipping", i, err)
 			continue
 		}
-		if err := renderSceneRGB24(bw, i, sd, cf, r, openBKGD, logger); err != nil {
+		if err := renderSceneRGB24(bw, i, sd, cf, r, openBKGD, tl, logger); err != nil {
 			return fmt.Errorf("scene %d: %w", i, err)
 		}
 	}
@@ -701,6 +828,7 @@ func renderSceneRGB24(
 	cf *ChunkyFile,
 	r io.ReaderAt,
 	openBKGD func(ChunkTAG) *bkgdCache,
+	tl *tmplLoader,
 	logger *log.Logger,
 ) error {
 	currentCam := 0
@@ -777,16 +905,25 @@ func renderSceneRGB24(
 			}
 		}
 
+		warnedTMPL := map[uint32]bool{}
 		for _, a := range actors {
-			wx, wy, wz, onStage := ActorWorldPos(a.Def, a.Path, a.Events, nfrm)
-			if !onStage {
+			state := ActorStateAtFrame(a.Def, a.Path, a.Events, nfrm)
+			if !state.OnStage {
 				continue
 			}
-			sx, sy, inView := projectWorldPoint(cam, wx, wy, wz)
-			if !inView {
+			tmpl, ok := tl.get(a.Def.TagTmplCNO)
+			if ok {
+				RenderActorOnFrame(frame, cam, tmpl, state, tl.pal)
 				continue
 			}
-			drawCircle(frame, sx, sy, 8, actorColors[a.Def.ARID%8])
+			if !warnedTMPL[a.Def.TagTmplCNO] {
+				warnedTMPL[a.Def.TagTmplCNO] = true
+				logger.Printf("warning: scene %d: TMPL/0x%08X not found in assets, rendering actors as circles", sceneIdx, a.Def.TagTmplCNO)
+			}
+			sx, sy, inView := projectWorldPoint(cam, state.Pos[0], state.Pos[1], state.Pos[2])
+			if inView {
+				drawCircle(frame, sx, sy, 8, actorColors[a.Def.ARID%8])
+			}
 		}
 
 		// Draw audio cue labels for any sounds firing in this frame window.
