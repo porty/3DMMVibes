@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,7 @@ func chunkyCommand() *cli.Command {
 					&cli.StringFlag{Name: "ctg", Usage: `Filter by chunk type (4 chars, e.g. "MVIE")`},
 					&cli.IntFlag{Name: "cno", Value: -1, Usage: "Filter by chunk number (-1 = all chunks)"},
 					&cli.BoolFlag{Name: "kids", Usage: "Show child chunk types for each chunk"},
+					&cli.BoolFlag{Name: "json", Usage: "Output as JSON"},
 				},
 				Action: chunkyListAction,
 			},
@@ -73,6 +75,9 @@ func chunkyListAction(c *cli.Context) error {
 	}
 
 	chunks := applyFilters(cf.Chunks, c.String("ctg"), c.Int("cno"))
+	if c.Bool("json") {
+		return listChunksJSON(cf, chunks)
+	}
 	listChunks(cf, chunks, c.Bool("kids"))
 	return nil
 }
@@ -135,6 +140,63 @@ func listChunks(cf *mm.ChunkyFile, chunks []mm.Chunk, showKids bool) {
 	if len(cf.Chunks) != len(chunks) {
 		fmt.Printf("\n(showing %d of %d chunks after filter)\n", len(chunks), len(cf.Chunks))
 	}
+}
+
+// jsonChunk is the JSON representation of a single chunk for --json output.
+type jsonChunk struct {
+	CTG      string   `json:"ctg"`
+	CNO      uint32   `json:"cno"`
+	Offset   int32    `json:"offset"`
+	Size     int32    `json:"size"`
+	Flags    string   `json:"flags"`
+	Children int      `json:"children"`
+	Kids     []string `json:"kids,omitempty"`
+	Name     string   `json:"name,omitempty"`
+}
+
+// jsonChunkyFile is the top-level JSON output for `chunky list --json`.
+type jsonChunkyFile struct {
+	Creator     string      `json:"creator"`
+	VerCur      int16       `json:"verCur"`
+	VerBack     int16       `json:"verBack"`
+	TotalChunks int         `json:"totalChunks"`
+	Chunks      []jsonChunk `json:"chunks"`
+}
+
+func listChunksJSON(cf *mm.ChunkyFile, chunks []mm.Chunk) error {
+	out := jsonChunkyFile{
+		Creator:     mm.CTGToString(cf.Creator),
+		VerCur:      cf.VerCur,
+		VerBack:     cf.VerBack,
+		TotalChunks: len(cf.Chunks),
+		Chunks:      make([]jsonChunk, 0, len(chunks)),
+	}
+	for _, c := range chunks {
+		jc := jsonChunk{
+			CTG:      mm.CTGToString(c.CTG),
+			CNO:      c.CNO,
+			Offset:   c.Offset,
+			Size:     c.Size,
+			Flags:    flagsString(c),
+			Children: int(c.CKid),
+			Name:     c.Name,
+		}
+		if c.CKid > 0 {
+			// collect unique kid tags in order
+			seen := map[string]bool{}
+			for _, k := range c.Kids {
+				tag := mm.CTGToString(k.CTG)
+				if !seen[tag] {
+					jc.Kids = append(jc.Kids, tag)
+					seen[tag] = true
+				}
+			}
+		}
+		out.Chunks = append(out.Chunks, jc)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 // kidsString returns a compact summary of child chunk types, e.g. "BMDL×4 MTRL×8".

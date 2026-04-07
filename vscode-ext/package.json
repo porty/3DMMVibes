@@ -12,10 +12,27 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
+    "customEditors": [
       {
-        "command": "3dmm.helloWorld",
-        "title": "Hello World"
+        "viewType": "3dmm.chunkyViewer",
+        "displayName": "Chunky File Viewer",
+        "selector": [
+          { "filenamePattern": "*.chk" },
+          { "filenamePattern": "*.CHK" },
+          { "filenamePattern": "*.3mm" },
+          { "filenamePattern": "*.3MM" },
+          { "filenamePattern": "*.3th" },
+          { "filenamePattern": "*.3TH" },
+          { "filenamePattern": "*.3cn" },
+          { "filenamePattern": "*.3CN" },
+          { "filenamePattern": "*.3cm" },
+          { "filenamePattern": "*.3CM" },
+          { "filenamePattern": "*.3tp" },
+          { "filenamePattern": "*.3TP" },
+          { "filenamePattern": "*.cht" },
+          { "filenamePattern": "*.CHT" }
+        ],
+        "priority": "default"
       }
     ]
   },
