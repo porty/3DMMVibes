@@ -17,7 +17,7 @@ func main() {
 			chunkyCommand(),
 			dagCommand(),
 			mbmpCommand(),
-			renderCommand(),
+			movieCommand(),
 		},
 	}
 	if err := app.Run(os.Args); err != nil {

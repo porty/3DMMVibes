@@ -89,19 +89,19 @@ You can pass in the filename of the chunky archive that contains the actors, but
 3dmm mbmp --palette pal.bin frame.mbmp -o frame.png
 ```
 
-### `render` — render a .3MM movie to frames or video
+### `movie render` — render a .3MM movie to frames or video
 
 ```bash
 # PNG frames
-3dmm render png --assets ./content movie.3mm
-3dmm render png --assets ./content --outdir ./frames --scene 0 movie.3mm
+3dmm movie render png --assets ./content movie.3mm
+3dmm movie render png --assets ./content --outdir ./frames --scene 0 movie.3mm
 
 # Raw RGB24 piped to ffmpeg manually
-3dmm render rgb24 --assets ./content movie.3mm \
+3dmm movie render rgb24 --assets ./content movie.3mm \
   | ffmpeg -f rawvideo -video_size 640x480 -pixel_format rgb24 -framerate 12 -i - output.mp4
 
 # Or use the built-in ffmpeg subcommand
-3dmm render ffmpeg --assets ./content movie.3mm output.mp4
+3dmm movie render ffmpeg --assets ./content movie.3mm output.mp4
 ```
 
 ## Benchmarking
