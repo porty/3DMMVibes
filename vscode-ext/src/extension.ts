@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as nodePath from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -27,6 +29,10 @@ interface ChunkyFile {
 	limit: number;
 	chunks: ChunkyChunk[];
 }
+
+type WebviewMessage =
+	| { type: 'navigate'; page: number }
+	| { type: 'openActor'; cno: number };
 
 class ChunkyDocument implements vscode.CustomDocument {
 	readonly uri: vscode.Uri;
@@ -69,13 +75,39 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 			}
 		};
 
-		webviewPanel.webview.onDidReceiveMessage((msg: { type: string; page: number }) => {
-			if (msg.type === 'navigate') {
-				loadPage(msg.page);
+		webviewPanel.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
+			switch (msg.type) {
+				case 'navigate':
+					await loadPage(msg.page);
+					break;
+				case 'openActor':
+					await this.openActorRender(filePath, msg.cno);
+					break;
 			}
 		});
 
 		await loadPage(0);
+	}
+
+	private async openActorRender(filePath: string, cno: number): Promise<void> {
+		const cnoHex = `0x${cno.toString(16).toUpperCase().padStart(8, '0')}`;
+		const tmpFile = nodePath.join(os.tmpdir(), `3dmm-actor-${cno}.png`);
+
+		await vscode.window.withProgress(
+			{ location: vscode.ProgressLocation.Notification, title: `Rendering TMPL ${cnoHex}…` },
+			async () => {
+				try {
+					await execFileAsync(
+						'3dmm',
+						['actor', 'render', '--cno', cnoHex, '--o', tmpFile, filePath],
+						{ timeout: 30_000 }
+					);
+					await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(tmpFile));
+				} catch (err) {
+					vscode.window.showErrorMessage(`Failed to render TMPL ${cnoHex}: ${err}`);
+				}
+			}
+		);
 	}
 
 	private async fetchPage(filePath: string, offset: number): Promise<ChunkyFile> {
@@ -92,13 +124,12 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 	}
 
 	private errorHtml(message: string): string {
-		const escaped = esc(message);
 		return `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
 <body style="font-family:monospace;padding:1em;color:#c00">
 <strong>Error loading chunky file</strong><br><br>
-<pre>${escaped}</pre>
+<pre>${esc(message)}</pre>
 <p>Make sure the <code>3dmm</code> binary is installed and available in PATH.</p>
 </body>
 </html>`;
@@ -110,10 +141,14 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 		const isFiltered = data.filteredTotal !== data.totalChunks;
 
 		const rows = data.chunks.map(c => {
+			const isTmpl = c.ctg === 'TMPL';
 			const cno = `0x${c.cno.toString(16).toUpperCase().padStart(8, '0')}`;
 			const offset = `0x${c.offset.toString(16).toUpperCase().padStart(8, '0')}`;
 			const kids = c.kids && c.kids.length > 0 ? c.kids.join(', ') : '';
-			return `<tr>
+			const rowAttrs = isTmpl
+				? `class="tmpl-row" data-cno="${c.cno}" title="Click to render actor/prop"`
+				: '';
+			return `<tr ${rowAttrs}>
 				<td>${esc(c.ctg)}</td>
 				<td class="mono">${esc(cno)}</td>
 				<td class="mono">${esc(offset)}</td>
@@ -183,6 +218,13 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
     vertical-align: top;
   }
   tr:hover td { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1)); }
+  .tmpl-row { cursor: pointer; }
+  .tmpl-row td:first-child {
+    color: var(--vscode-textLink-foreground, #4e94ce);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .tmpl-row:hover td:first-child { text-decoration: none; }
   .num { text-align: right; }
   .mono { font-family: monospace; }
   .pagination {
@@ -203,6 +245,7 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
   }
   button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
   button:disabled { opacity: 0.4; cursor: default; }
+  .hint { font-size: 0.8em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -232,9 +275,17 @@ ${rows}
 ${pagination}
 <script>
   const vscode = acquireVsCodeApi();
+
   function navigate(page) {
     vscode.postMessage({ type: 'navigate', page });
   }
+
+  document.querySelector('tbody').addEventListener('click', e => {
+    const row = e.target.closest('tr.tmpl-row');
+    if (row) {
+      vscode.postMessage({ type: 'openActor', cno: parseInt(row.dataset.cno, 10) });
+    }
+  });
 </script>
 </body>
 </html>`;
