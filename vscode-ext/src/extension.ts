@@ -4,6 +4,8 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
+const PAGE_SIZE = 500;
+
 interface ChunkyChunk {
 	ctg: string;
 	cno: number;
@@ -20,6 +22,9 @@ interface ChunkyFile {
 	verCur: number;
 	verBack: number;
 	totalChunks: number;
+	filteredTotal: number;
+	offset: number;
+	limit: number;
 	chunks: ChunkyChunk[];
 }
 
@@ -49,30 +54,45 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 		document: ChunkyDocument,
 		webviewPanel: vscode.WebviewPanel,
 	): Promise<void> {
-		webviewPanel.webview.options = { enableScripts: false };
+		webviewPanel.webview.options = { enableScripts: true };
 		webviewPanel.webview.html = this.loadingHtml();
 
-		try {
-			const data = await this.loadChunkyData(document.uri.fsPath);
-			webviewPanel.webview.html = this.renderHtml(document.uri.fsPath, data);
-		} catch (err) {
-			webviewPanel.webview.html = this.errorHtml(String(err));
-		}
+		const filePath = document.uri.fsPath;
+
+		const loadPage = async (page: number) => {
+			const offset = page * PAGE_SIZE;
+			try {
+				const data = await this.fetchPage(filePath, offset);
+				webviewPanel.webview.html = this.renderHtml(filePath, data, page);
+			} catch (err) {
+				webviewPanel.webview.html = this.errorHtml(String(err));
+			}
+		};
+
+		webviewPanel.webview.onDidReceiveMessage((msg: { type: string; page: number }) => {
+			if (msg.type === 'navigate') {
+				loadPage(msg.page);
+			}
+		});
+
+		await loadPage(0);
 	}
 
-	private async loadChunkyData(filePath: string): Promise<ChunkyFile> {
-		const { stdout } = await execFileAsync('3dmm', ['chunky', 'list', '--json', filePath], {
-			timeout: 10_000,
-		});
+	private async fetchPage(filePath: string, offset: number): Promise<ChunkyFile> {
+		const { stdout } = await execFileAsync(
+			'3dmm',
+			['chunky', 'list', '--json', '--limit', String(PAGE_SIZE), '--offset', String(offset), filePath],
+			{ maxBuffer: 16 * 1024 * 1024 }
+		);
 		return JSON.parse(stdout) as ChunkyFile;
 	}
 
 	private loadingHtml(): string {
-		return `<!DOCTYPE html><html><body><p>Loading…</p></body></html>`;
+		return `<!DOCTYPE html><html><body style="font-family:sans-serif;padding:1em"><p>Loading…</p></body></html>`;
 	}
 
 	private errorHtml(message: string): string {
-		const escaped = message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+		const escaped = esc(message);
 		return `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
@@ -84,14 +104,15 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 </html>`;
 	}
 
-	private renderHtml(filePath: string, data: ChunkyFile): string {
+	private renderHtml(filePath: string, data: ChunkyFile, page: number): string {
 		const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
+		const totalPages = Math.ceil(data.filteredTotal / PAGE_SIZE);
+		const isFiltered = data.filteredTotal !== data.totalChunks;
 
 		const rows = data.chunks.map(c => {
 			const cno = `0x${c.cno.toString(16).toUpperCase().padStart(8, '0')}`;
 			const offset = `0x${c.offset.toString(16).toUpperCase().padStart(8, '0')}`;
 			const kids = c.kids && c.kids.length > 0 ? c.kids.join(', ') : '';
-			const name = c.name ?? '';
 			return `<tr>
 				<td>${esc(c.ctg)}</td>
 				<td class="mono">${esc(cno)}</td>
@@ -100,19 +121,33 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 				<td>${esc(c.flags)}</td>
 				<td class="num">${c.children}</td>
 				<td>${esc(kids)}</td>
-				<td>${esc(name)}</td>
+				<td>${esc(c.name ?? '')}</td>
 			</tr>`;
 		}).join('\n');
 
-		const filtered = data.totalChunks !== data.chunks.length
-			? `<p class="note">Showing ${data.chunks.length} of ${data.totalChunks} chunks (filtered)</p>`
+		const chunkCountLabel = isFiltered
+			? `${data.filteredTotal} chunks (filtered from ${data.totalChunks})`
+			: `${data.totalChunks} chunks`;
+
+		const pageInfo = totalPages > 1
+			? `Page ${page + 1} of ${totalPages} &nbsp;(${PAGE_SIZE} per page)`
 			: '';
+
+		const prevDisabled = page <= 0 ? 'disabled' : '';
+		const nextDisabled = page >= totalPages - 1 ? 'disabled' : '';
+
+		const pagination = totalPages > 1 ? `
+		<div class="pagination">
+			<button onclick="navigate(${page - 1})" ${prevDisabled}>&#8592; Prev</button>
+			<span>${pageInfo}</span>
+			<button onclick="navigate(${page + 1})" ${nextDisabled}>Next &#8594;</button>
+		</div>` : '';
 
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
 <style>
   body {
     font-family: var(--vscode-font-family, monospace);
@@ -122,15 +157,11 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
     padding: 12px 16px;
     margin: 0;
   }
-  h1 {
-    font-size: 1.1em;
-    margin: 0 0 4px 0;
-    font-weight: 600;
-  }
+  h1 { font-size: 1.1em; margin: 0 0 4px 0; font-weight: 600; }
   .meta {
     font-size: 0.9em;
     color: var(--vscode-descriptionForeground);
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
   table {
     border-collapse: collapse;
@@ -144,7 +175,6 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
     background: var(--vscode-editor-lineHighlightBackground, rgba(128,128,128,0.1));
     border-bottom: 1px solid var(--vscode-panel-border, #555);
     white-space: nowrap;
-    color: var(--vscode-foreground);
   }
   td {
     padding: 2px 10px;
@@ -152,16 +182,27 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
     white-space: nowrap;
     vertical-align: top;
   }
-  tr:hover td {
-    background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1));
-  }
+  tr:hover td { background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.1)); }
   .num { text-align: right; }
   .mono { font-family: monospace; }
-  .note {
-    font-size: 0.85em;
-    color: var(--vscode-descriptionForeground);
-    margin-top: 8px;
+  .pagination {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+    font-size: 0.9em;
   }
+  button {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    padding: 4px 10px;
+    cursor: pointer;
+    border-radius: 2px;
+    font-size: 0.9em;
+  }
+  button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+  button:disabled { opacity: 0.4; cursor: default; }
 </style>
 </head>
 <body>
@@ -169,7 +210,7 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 <p class="meta">
   Creator: <strong>${esc(data.creator)}</strong> &nbsp;|&nbsp;
   Version: ${data.verCur}/${data.verBack} &nbsp;|&nbsp;
-  Chunks: ${data.totalChunks}
+  ${chunkCountLabel}
 </p>
 <table>
   <thead>
@@ -188,7 +229,13 @@ class ChunkyEditorProvider implements vscode.CustomReadonlyEditorProvider<Chunky
 ${rows}
   </tbody>
 </table>
-${filtered}
+${pagination}
+<script>
+  const vscode = acquireVsCodeApi();
+  function navigate(page) {
+    vscode.postMessage({ type: 'navigate', page });
+  }
+</script>
 </body>
 </html>`;
 	}

@@ -28,6 +28,8 @@ func chunkyCommand() *cli.Command {
 					&cli.IntFlag{Name: "cno", Value: -1, Usage: "Filter by chunk number (-1 = all chunks)"},
 					&cli.BoolFlag{Name: "kids", Usage: "Show child chunk types for each chunk"},
 					&cli.BoolFlag{Name: "json", Usage: "Output as JSON"},
+					&cli.IntFlag{Name: "limit", Value: -1, Usage: "Maximum number of chunks to return (-1 = all); used with --json"},
+					&cli.IntFlag{Name: "offset", Value: 0, Usage: "Number of chunks to skip before returning; used with --json"},
 				},
 				Action: chunkyListAction,
 			},
@@ -76,7 +78,7 @@ func chunkyListAction(c *cli.Context) error {
 
 	chunks := applyFilters(cf.Chunks, c.String("ctg"), c.Int("cno"))
 	if c.Bool("json") {
-		return listChunksJSON(cf, chunks)
+		return listChunksJSON(cf, chunks, c.Int("offset"), c.Int("limit"))
 	}
 	listChunks(cf, chunks, c.Bool("kids"))
 	return nil
@@ -156,20 +158,37 @@ type jsonChunk struct {
 
 // jsonChunkyFile is the top-level JSON output for `chunky list --json`.
 type jsonChunkyFile struct {
-	Creator     string      `json:"creator"`
-	VerCur      int16       `json:"verCur"`
-	VerBack     int16       `json:"verBack"`
-	TotalChunks int         `json:"totalChunks"`
-	Chunks      []jsonChunk `json:"chunks"`
+	Creator       string      `json:"creator"`
+	VerCur        int16       `json:"verCur"`
+	VerBack       int16       `json:"verBack"`
+	TotalChunks   int         `json:"totalChunks"`
+	FilteredTotal int         `json:"filteredTotal"`
+	Offset        int         `json:"offset"`
+	Limit         int         `json:"limit"`
+	Chunks        []jsonChunk `json:"chunks"`
 }
 
-func listChunksJSON(cf *mm.ChunkyFile, chunks []mm.Chunk) error {
+func listChunksJSON(cf *mm.ChunkyFile, chunks []mm.Chunk, offset, limit int) error {
+	filteredTotal := len(chunks)
+
+	// apply pagination
+	if offset > len(chunks) {
+		offset = len(chunks)
+	}
+	chunks = chunks[offset:]
+	if limit >= 0 && limit < len(chunks) {
+		chunks = chunks[:limit]
+	}
+
 	out := jsonChunkyFile{
-		Creator:     mm.CTGToString(cf.Creator),
-		VerCur:      cf.VerCur,
-		VerBack:     cf.VerBack,
-		TotalChunks: len(cf.Chunks),
-		Chunks:      make([]jsonChunk, 0, len(chunks)),
+		Creator:       mm.CTGToString(cf.Creator),
+		VerCur:        cf.VerCur,
+		VerBack:       cf.VerBack,
+		TotalChunks:   len(cf.Chunks),
+		FilteredTotal: filteredTotal,
+		Offset:        offset,
+		Limit:         limit,
+		Chunks:        make([]jsonChunk, 0, len(chunks)),
 	}
 	for _, c := range chunks {
 		jc := jsonChunk{
