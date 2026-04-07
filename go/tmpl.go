@@ -45,8 +45,12 @@ type LoadedTemplate struct {
 	// root part (its parent is the body's root actor, which has identity transform).
 	ParentParts []int
 	// Costumes maps ibset → the first LoadedCMTL found for that ibset.
+	// Used as the default costume when no aetCost event has overridden it.
 	// Body parts with no matching CMTL fall back to ibsetColors in the renderer.
 	Costumes map[int]*LoadedCMTL
+	// CostumesByChid maps CMTL CHID (= cmid in aetCost events) → LoadedCMTL.
+	// All CMTLs are stored here, including alternates for the same ibset.
+	CostumesByChid map[uint32]*LoadedCMTL
 	// IBSetPartIndex[i] is the 0-based position of body part i among all body
 	// parts that share the same ibset. Used to index into LoadedCMTL.Parts.
 	IBSetPartIndex []int
@@ -69,11 +73,12 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 	grfTmpl := binary.LittleEndian.Uint32(tmplData[12:16])
 
 	lt := &LoadedTemplate{
-		CNO:      cno,
-		GrfTmpl:  grfTmpl,
-		Actions:  make(map[uint32]*ActionData),
-		Models:   make(map[uint32]*BRModel),
-		Costumes: make(map[int]*LoadedCMTL),
+		CNO:            cno,
+		GrfTmpl:        grfTmpl,
+		Actions:        make(map[uint32]*ActionData),
+		Models:         make(map[uint32]*BRModel),
+		Costumes:       make(map[int]*LoadedCMTL),
+		CostumesByChid: make(map[uint32]*LoadedCMTL),
 	}
 
 	// Load GLBS for body-part-set mapping.
@@ -157,10 +162,6 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 		if err != nil {
 			continue
 		}
-		// Use the first CMTL for each ibset.
-		if _, exists := lt.Costumes[ibset]; exists {
-			continue
-		}
 		// Determine the number of MTRL parts by scanning CHID values.
 		maxChid := -1
 		for _, ck := range cmtlChunk.Kids {
@@ -204,7 +205,12 @@ func LoadTemplate(cf *ChunkyFile, r io.ReaderAt, cno uint32) (*LoadedTemplate, e
 			}
 			cmtl.Parts[ck.CHID] = mat
 		}
-		lt.Costumes[ibset] = cmtl
+		// Store in CostumesByChid for all CMTLs (used by aetCost event lookup).
+		lt.CostumesByChid[kid.CHID] = cmtl
+		// Store in Costumes only for the first CMTL per ibset (default costume).
+		if _, exists := lt.Costumes[ibset]; !exists {
+			lt.Costumes[ibset] = cmtl
+		}
 	}
 
 	// Precompute IBSetPartIndex: position of each body part within its ibset.

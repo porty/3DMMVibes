@@ -259,6 +259,9 @@ type ActorState struct {
 	ActionCHID uint32     // current action CHID (matches ACTN child CHID in LoadedTemplate)
 	CelIdx     int        // current cel index within the action (not yet wrapped to action length)
 	Rotation   BMAT34     // orientation matrix from aetRotF/aetRotH; identity if none set
+	// ActiveCostumes maps ibset → cmid (CHID of the active CMTL under TMPL).
+	// nil means no aetCost event has fired; renderer uses the template default per ibset.
+	ActiveCostumes map[int]uint32
 }
 
 // ActorStateAtFrame computes the full per-frame rendering state of an actor at frame nfrm.
@@ -280,6 +283,9 @@ func ActorStateAtFrame(def *ActorDef, path []RoutePoint, events []ActorEvent, nf
 	celNfrm := int32(0) // frame at which cel was last set; used to count elapsed frames
 	frozen := false
 	hasAction := false // true once the first aetActn event has fired
+
+	// Costume tracking: lazily allocated when the first aetCost event fires.
+	var activeCostumes map[int]uint32
 
 	// Rotation: identity matrix.
 	rotation := BMAT34{
@@ -334,6 +340,20 @@ func ActorStateAtFrame(def *ActorDef, path []RoutePoint, events []ActorEvent, nf
 			if len(ev.VarData) >= 4 {
 				frozen = int32(binary.LittleEndian.Uint32(ev.VarData[0:4])) != 0
 			}
+		case aetCost:
+			// AEVCOST: ibset(4) + cmid(4) + fCmtl(4) + tag.sid(4) + tag.pcrf(4) + tag.ctg(4) + tag.cno(4)
+			if len(ev.VarData) >= 12 {
+				ibset := int(int32(binary.LittleEndian.Uint32(ev.VarData[0:4])))
+				cmid := binary.LittleEndian.Uint32(ev.VarData[4:8])
+				fCmtl := int32(binary.LittleEndian.Uint32(ev.VarData[8:12]))
+				if fCmtl != 0 {
+					if activeCostumes == nil {
+						activeCostumes = make(map[int]uint32)
+					}
+					activeCostumes[ibset] = cmid
+				}
+				// fCmtl==0 (custom tag-based MTRL) is not yet implemented.
+			}
 		case aetRotF, aetRotH:
 			// VarData: BMAT34 (4×3 BRS = 48 bytes, row-major).
 			if len(ev.VarData) >= 48 {
@@ -364,11 +384,12 @@ func ActorStateAtFrame(def *ActorDef, path []RoutePoint, events []ActorEvent, nf
 	}
 
 	return ActorState{
-		OnStage:    onStage,
-		Pos:        [3]float64{px + subX + def.FullRouteOffset[0], py + subY + def.FullRouteOffset[1], pz + subZ + def.FullRouteOffset[2]},
-		ActionCHID: actionCHID,
-		CelIdx:     cel,
-		Rotation:   rotation,
+		OnStage:        onStage,
+		Pos:            [3]float64{px + subX + def.FullRouteOffset[0], py + subY + def.FullRouteOffset[1], pz + subZ + def.FullRouteOffset[2]},
+		ActionCHID:     actionCHID,
+		CelIdx:         cel,
+		Rotation:       rotation,
+		ActiveCostumes: activeCostumes,
 	}
 }
 

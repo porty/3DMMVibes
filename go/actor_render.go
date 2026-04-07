@@ -311,8 +311,18 @@ func RenderActorOnFrame(frame *image.NRGBA, cam CamParams, tmpl *LoadedTemplate,
 			ibset = tmpl.IBSets[partIdx]
 		}
 
+		// Resolve active costume for this body part: prefer the one set by aetCost
+		// events (looked up by cmid = CHID), fall back to the template default per ibset.
+		cmtl := tmpl.Costumes[ibset]
+		if state.ActiveCostumes != nil {
+			if chid, ok := state.ActiveCostumes[ibset]; ok {
+				if c, ok := tmpl.CostumesByChid[chid]; ok {
+					cmtl = c
+				}
+			}
+		}
 		var mat *Material
-		if cmtl, ok := tmpl.Costumes[ibset]; ok {
+		if cmtl != nil {
 			pos := 0
 			if partIdx < len(tmpl.IBSetPartIndex) {
 				pos = tmpl.IBSetPartIndex[partIdx]
